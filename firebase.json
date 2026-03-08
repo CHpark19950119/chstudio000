@@ -1,0 +1,12 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "cheonhong-studio",
+          "appId": "1:241623003531:android:b27e90816d5c2ba832ff8e"
+        }
+      }
+    }
+  }
+}

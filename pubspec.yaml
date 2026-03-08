@@ -1,0 +1,65 @@
+name: cheonhong_studio
+description: CHEONHONG STUDIO - Android
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  firebase_core: ^4.4.0
+  cloud_firestore: ^6.1.2
+  flutter_local_notifications: ^18.0.0
+  timezone: ^0.10.1
+  flutter_foreground_task: ^9.2.0
+  permission_handler: ^12.0.1
+  provider: ^6.1.1
+  cupertino_icons: ^1.0.6
+  google_fonts: ^8.0.2
+  intl: ^0.20.2
+  shared_preferences: ^2.5.4
+  connectivity_plus: ^7.0.0
+  geolocator: ^14.0.2
+  mobile_scanner: ^7.2.0
+  qr_flutter: ^4.1.0
+  nfc_manager: 3.5.0
+  flutter_tts: ^4.2.5
+  http: ^1.6.0
+  home_widget: ^0.7.0
+  lottie: ^3.1.0
+  image_picker: ^1.0.7
+  firebase_storage: ^13.0.6
+  cloud_functions: 6.0.6
+  flame: ^1.21.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  sensors_plus: ^6.1.1
+
+
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon/ch_icon_1024.png"
+  adaptive_icon_background: "#08080c"
+  adaptive_icon_foreground: "assets/icon/ch_adaptive_foreground.png"
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/Book_Loader.json
+    - assets/books_focus.json
+    - assets/habitat/
+    - assets/habitat/Furniture/
+    - assets/habitat/House/
+  
