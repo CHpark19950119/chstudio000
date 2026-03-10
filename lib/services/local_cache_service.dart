@@ -169,7 +169,7 @@ class LocalCacheService {
   }
 
   bool isWriteProtected() {
-    return DateTime.now().millisecondsSinceEpoch - _lastWriteTime < 5000;
+    return DateTime.now().millisecondsSinceEpoch - _lastWriteTime < 10000;
   }
 
   // === Order / Todos 전용 캐시 ===

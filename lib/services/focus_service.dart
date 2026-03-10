@@ -8,6 +8,7 @@ import 'dart:convert';
 import '../models/models.dart';
 import 'firebase_service.dart';
 import 'creature_service.dart';
+import 'cradle_service.dart';
 import '../utils/study_date_utils.dart';
 
 // ══════════════════════════════════════════
@@ -252,6 +253,9 @@ class FocusService extends ChangeNotifier {
     _subTimerActive = false;
     _problemStart = null;
     _problemLaps.clear();
+
+    // 거치대 상태 즉시 동기화
+    _isOnCradle = CradleService().isOnCradle;
 
     await _recordStudyStartIfFirst();
     await FlutterForegroundTask.startService(

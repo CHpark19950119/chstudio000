@@ -2,6 +2,7 @@
 /// v8.5: NFC 4태그 토글 + 이동시간 + 수면관리
 
 import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ─── 시간 기록 (기상/공부시작/외출/귀가/공부종료) ───
@@ -644,6 +645,48 @@ class SubjectConfig {
         'name': s.name, 'emoji': s.emoji, 'color': s.colorValue,
       }).toList();
       await p.setString('subject_list_v2', jsonEncode(list));
+    } catch (_) {}
+    _syncToFirestore();
+  }
+
+  /// Firestore에 과목 목록 동기화 (비동기, 에러 무시)
+  static Future<void> _syncToFirestore() async {
+    try {
+      final list = _subjects.values.map((s) => {
+        'name': s.name, 'emoji': s.emoji, 'color': s.colorValue,
+      }).toList();
+      await FirebaseFirestore.instance
+        .doc('users/sJ8Pxusw9gR0tNR44RhkIge7OiG2/data/meta')
+        .set({'subjects': list}, SetOptions(merge: true));
+    } catch (_) {}
+  }
+
+  /// Firestore에서 과목 목록 동기화 (다른 기기 대비)
+  static Future<void> syncFromFirestore() async {
+    try {
+      final snap = await FirebaseFirestore.instance
+        .doc('users/sJ8Pxusw9gR0tNR44RhkIge7OiG2/data/meta')
+        .get(const GetOptions(source: Source.server))
+        .timeout(const Duration(seconds: 5));
+      final data = snap.data();
+      if (data == null || data['subjects'] == null) return;
+      final list = List<dynamic>.from(data['subjects']);
+      final newSubjects = <String, SubjectInfo>{};
+      for (final item in list) {
+        final m = Map<String, dynamic>.from(item as Map);
+        final name = m['name'] ?? '';
+        if (name.isEmpty) continue;
+        newSubjects[name] = SubjectInfo(name, m['emoji'] ?? '📚', m['color'] ?? 0xFF6366F1);
+      }
+      if (newSubjects.isNotEmpty) {
+        _subjects = newSubjects;
+        _loaded = true;
+        final p = await SharedPreferences.getInstance();
+        final saveList = _subjects.values.map((s) => {
+          'name': s.name, 'emoji': s.emoji, 'color': s.colorValue,
+        }).toList();
+        await p.setString('subject_list_v2', jsonEncode(saveList));
+      }
     } catch (_) {}
   }
 }

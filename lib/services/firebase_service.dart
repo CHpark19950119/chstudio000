@@ -215,8 +215,10 @@ class FirebaseService {
   void _bgRefreshDoc(String cacheKey, String docPath) {
     Future(() async {
       try {
+        if (LocalCacheService().isWriteProtected()) return;
         final doc = await _db.doc(docPath).get().timeout(const Duration(seconds: 10));
         if (doc.exists && doc.data() != null) {
+          if (LocalCacheService().isWriteProtected()) return;
           LocalCacheService().saveGeneric(cacheKey, doc.data()!);
         }
       } catch (_) {}

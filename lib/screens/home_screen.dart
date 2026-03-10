@@ -32,15 +32,17 @@ import '../services/todo_service.dart';
 import '../services/local_cache_service.dart';
 import '../services/creature_service.dart';
 import '../services/cradle_service.dart';
+import '../services/library_service.dart';
 import '../utils/study_date_utils.dart';
-import '../widgets/creature_float_button.dart';
-import 'habitat_screen.dart';
+// creature_float_button, habitat_screen — 임시 비활성화
+import 'library_seat_map_screen.dart';
 
 part 'home_focus_section.dart';
 part 'home_daily_log.dart';
 part 'home_routine_card.dart';
 part 'home_order_section.dart';
 part 'home_todo_section.dart';
+part 'home_library_card.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -80,6 +82,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   List<FocusCycle> _focusSessions = [];
   Map<String, int> _focusWeekly = {};
   bool _focusRecordsLoading = false;
+  bool _focusScreenOpen = false;
+
+  // ★ Library
+  LibraryRoom? _libraryRoom;
 
   // ★ R2: COMPASS 대시보드 데이터
   OrderData? _orderData;
@@ -182,39 +188,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         final data = snap.data();
         if (data == null) return;
 
-        // ★ write 보호 중이면 스트림 데이터로 UI/캐시 갱신 스킵
+        // ★ v10: 스트림에서 timeRecords 파싱 완전 제거
+        // → timeRecords는 _doLoad() (today doc)에서만 읽음
+        // → 스트림 study doc과 today doc 충돌로 인한 플리커링 근본 해결
         final isProtected = LocalCacheService().isWriteProtected();
         if (!isProtected) {
           FirebaseService().updateCacheFromStream(data);
         }
         final d = _studyDate();
 
-        // ── timeRecords ──
-        String? wake, study, studyEnd, outing, returnHome, bedTime, mealStart, mealEnd;
-        List<MealEntry>? meals;
-        bool? noOuting;
-        int? outMin;
-        bool hasTodayTimeRecord = false;
-        try {
-          final trRaw = data['timeRecords'] as Map<String, dynamic>?;
-          if (trRaw != null && trRaw[d] != null) {
-            hasTodayTimeRecord = true;
-            final tr = TimeRecord.fromMap(d, trRaw[d] as Map<String, dynamic>);
-            wake = tr.wake; study = tr.study; studyEnd = tr.studyEnd;
-            outing = tr.outing; returnHome = tr.returnHome;
-            bedTime = tr.bedTime;
-            mealStart = tr.mealStart; mealEnd = tr.mealEnd;
-            meals = tr.meals; noOuting = tr.noOuting; outMin = tr.outingMinutes;
-          }
-        } catch (e) { debugPrint('[Home] stream timeRecords: $e'); }
-
-        // ── studyTimeRecords ──
+        // ── studyTimeRecords (공부시간만 스트림 업데이트) ──
         int? effMin;
-        bool hasTodayStudyTime = false;
         try {
           final strRaw = data['studyTimeRecords'] as Map<String, dynamic>?;
           if (strRaw != null && strRaw[d] != null) {
-            hasTodayStudyTime = true;
             effMin = StudyTimeRecord.fromMap(d, strRaw[d] as Map<String, dynamic>).effectiveMinutes;
           }
         } catch (e) { debugPrint('[Home] stream studyTimeRecords: $e'); }
@@ -242,17 +229,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         } catch (e) { debugPrint('[Home] stream todos: $e'); }
 
         _safeSetState(() {
-          // ★ write 보호 중이면 timeRecords도 스트림 덮어쓰기 차단 (공부종료 등 소실 방지)
-          if (hasTodayTimeRecord && !isProtected) {
-            _wake = wake; _studyStart = study; _studyEnd = studyEnd;
-            _outing = outing; _returnHome = returnHome; _bedTime = bedTime;
-            _mealStart = mealStart; _mealEnd = mealEnd;
-            _todayMeals = meals ?? []; _noOuting = noOuting ?? false;
-            _outingMinutes = outMin;
-          }
-          if (hasTodayStudyTime && effMin != null) _effMin = effMin;
+          // ★ v10: timeRecords는 스트림에서 업데이트하지 않음 (플리커 방지)
+          if (effMin != null) _effMin = effMin;
           if (orderData != null && !isProtected) _orderData = orderData;
-          // ★ write 보호 중이면 todos 덮어쓰기 스킵 (방금 입력한 데이터 보호)
           if (todayTodos != null && !isProtected) _todayTodos = todayTodos;
           _grade = DailyGrade.calculate(
             date: d, wakeTime: _wake,
@@ -658,6 +637,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _startFirebaseListener();
     _load();
     _loadFocusRecords();
+    _loadLibrary();
     // ★ 자동 아카이브 (7일 이전 데이터 → 월별 아카이브, UI 블로킹 없음)
     fb.autoArchive().catchError((e) {
       debugPrint('[Home] autoArchive error: $e');
@@ -700,13 +680,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ),
       ]),
       bottomNavigationBar: _bottomNav(),
-      floatingActionButton: _tab == 0 ? CreatureFloatButton(
-        level: _creatureLevel,
-        stage: _creatureStage,
-        onTap: () => Navigator.push(context,
-          MaterialPageRoute(builder: (_) => const HabitatScreen()))
-          .then((_) => _load()),
-      ) : null,
+      // Habitat FAB 임시 비활성화
+      floatingActionButton: null,
     );
   }
 
@@ -801,23 +776,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           _staggered(0, _orderPortalChip()),
           const SizedBox(height: 12),
           _staggered(1, _nfcStatusCard()),
-          const SizedBox(height: 14),
-          // ★ Stage4: 날씨+성적 2컬럼 + 순공시간 (NFC카드 아래)
-          _staggered(2, _weatherGradeRow()),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
+          _staggered(2, _libraryCard()),
+          const SizedBox(height: 12),
           _staggered(2, _studyTimeCard()),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+          _staggered(3, _gradeCard()),
+          const SizedBox(height: 14),
           if (_ft.isRunning) ...[
             _staggered(4, _activeFocusBanner()),
             const SizedBox(height: 12),
           ],
-          // ★ #9: 데일리 메모 컴팩트 위젯
           if (_dailyMemos.isNotEmpty || true) ...[
             _staggered(4, _dashboardMemoWidget()),
             const SizedBox(height: 12),
           ],
-          const SizedBox(height: 4),
-          // ★ 기존 _orderPortalCard() 제거됨
+          _staggered(4, _locationSummaryCard()),
+          const SizedBox(height: 12),
           _staggered(4, _quickToolsRow()),
           const SizedBox(height: 24),
         ],
@@ -1204,6 +1179,49 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ]),
       )),
     ]));
+  }
+
+  // ── 성적 카드 (단독) ──
+  Widget _gradeCard() {
+    final g = _grade ?? DailyGrade.calculate(date: _studyDate());
+    final gc = BotanicalColors.gradeColor(g.grade);
+    final flower = GrowthMetaphor.gradeFlower(g.grade);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft, end: Alignment.bottomRight,
+          colors: [gc.withOpacity(0.07), gc.withOpacity(0.03)]),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: gc.withOpacity(0.15)),
+        boxShadow: [BoxShadow(
+          color: gc.withOpacity(0.06),
+          blurRadius: 16, offset: const Offset(0, 4))]),
+      child: Row(children: [
+        Text(flower, style: const TextStyle(fontSize: 18)),
+        const SizedBox(width: 10),
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('TODAY', style: BotanicalTypo.label(
+            size: 10, weight: FontWeight.w700, letterSpacing: 1, color: gc)),
+          Row(crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic, children: [
+            Text(g.grade, style: BotanicalTypo.heading(
+              size: 22, weight: FontWeight.w900, color: gc)),
+            const SizedBox(width: 6),
+            Text(g.totalScore.toStringAsFixed(1), style: BotanicalTypo.number(
+              size: 13, weight: FontWeight.w300, color: _textMuted)),
+          ]),
+        ]),
+        const Spacer(),
+        SizedBox(width: 100, child: ClipRRect(
+          borderRadius: BorderRadius.circular(3),
+          child: LinearProgressIndicator(
+            value: (g.totalScore / 100).clamp(0.0, 1.0),
+            backgroundColor: gc.withOpacity(0.1),
+            valueColor: AlwaysStoppedAnimation(gc),
+            minHeight: 4))),
+      ]),
+    );
   }
 
   // ── 순공시간 카드 (full width) ──

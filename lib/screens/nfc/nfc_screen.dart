@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import '../../theme/botanical_theme.dart';
 import '../../models/models.dart';
 import '../../services/nfc_service.dart';
+import '../../services/cradle_service.dart';
+import '../../services/geofence_service.dart';
 
 class NfcScreen extends StatefulWidget {
   const NfcScreen({super.key});
@@ -12,7 +15,6 @@ class NfcScreen extends StatefulWidget {
 class _NfcScreenState extends State<NfcScreen> with TickerProviderStateMixin {
   final _nfc = NfcService();
 
-  // ─── 로컬 UI 상태 (ListenableBuilder 범위 밖) ───
   bool _isScanning = false;
   bool _registering = false;
   bool _isWritingNdef = false;
@@ -21,51 +23,69 @@ class _NfcScreenState extends State<NfcScreen> with TickerProviderStateMixin {
   NfcTagConfig? _lastMatchedTag;
   String _statusMessage = '';
   NfcTagRole _selectedRole = NfcTagRole.wake;
-  final _nameController = TextEditingController();
+  final _nameCtrl = TextEditingController();
 
-  late AnimationController _pulseController;
+  late AnimationController _pulseCtrl;
+  bool _cradleEnabled = false;
+  bool _silentNfc = false;
+  bool _geoEnabled = false;
+  bool _geoSettingHome = false;
 
   bool get _dk => Theme.of(context).brightness == Brightness.dark;
-  Color get _textMain => _dk ? BotanicalColors.textMainDark : BotanicalColors.textMain;
-  Color get _textSub => _dk ? BotanicalColors.textSubDark : BotanicalColors.textSub;
-  Color get _textMuted => _dk ? BotanicalColors.textMutedDark : BotanicalColors.textMuted;
-  Color get _accent => _dk ? BotanicalColors.lanternGold : BotanicalColors.primary;
+  Color get _main => _dk ? BotanicalColors.textMainDark : BotanicalColors.textMain;
+  Color get _sub => _dk ? BotanicalColors.textSubDark : BotanicalColors.textSub;
+  Color get _muted => _dk ? BotanicalColors.textMutedDark : BotanicalColors.textMuted;
+  Color get _ac => _dk ? BotanicalColors.lanternGold : BotanicalColors.primary;
   Color get _card => _dk ? BotanicalColors.cardDark : BotanicalColors.cardLight;
-  Color get _border => _dk ? BotanicalColors.borderDark : BotanicalColors.borderLight;
+  Color get _bdr => _dk ? BotanicalColors.borderDark : BotanicalColors.borderLight;
+
+  void _safeSetState(VoidCallback fn) {
+    if (!mounted) return;
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.persistentCallbacks ||
+        phase == SchedulerPhase.midFrameMicrotasks) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(fn);
+      });
+    } else { setState(fn); }
+  }
 
   @override
   void initState() {
     super.initState();
-    _pulseController = AnimationController(
+    _pulseCtrl = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 1500))
       ..repeat(reverse: true);
-    _initNfc();
+    _init();
   }
 
-  Future<void> _initNfc() async {
+  Future<void> _init() async {
     await _nfc.initialize();
+    _silentNfc = _nfc.isSilentReaderEnabled;
+    _cradleEnabled = CradleService().isEnabled;
+    _geoEnabled = GeofenceService().enabled;
     if (mounted) setState(() => _nfcLoading = false);
   }
 
   @override
   void dispose() {
-    _nameController.dispose();
-    _pulseController.dispose();
+    _nameCtrl.dispose();
+    _pulseCtrl.dispose();
     _nfc.stopScan();
     super.dispose();
   }
 
+  // ── Actions ──
   void _startScan({bool forRegister = false}) {
     if (!_nfc.isAvailable) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('이 기기는 NFC를 지원하지 않습니다.'),
-        backgroundColor: BotanicalColors.error));
+        content: Text('NFC 미지원 기기'), backgroundColor: BotanicalColors.error));
       return;
     }
     setState(() {
       _isScanning = true; _registering = forRegister;
       _lastScannedUid = null; _lastMatchedTag = null;
-      _statusMessage = 'NFC 태그를 가까이 대주세요...';
+      _statusMessage = '태그를 가까이 대주세요…';
     });
     _nfc.startScan(
       executeOnMatch: !forRegister,
@@ -74,476 +94,75 @@ class _NfcScreenState extends State<NfcScreen> with TickerProviderStateMixin {
         setState(() {
           _isScanning = false; _lastScannedUid = uid; _lastMatchedTag = matched;
           if (_registering) {
-            if (matched != null) {
-              _statusMessage = '이미 등록된 태그: ${matched.name}';
-              _registering = false;
-            } else {
-              _statusMessage = '새 태그 감지됨';
-            }
+            _statusMessage = matched != null
+              ? '이미 등록: ${matched.name}' : '새 태그 감지됨';
+            if (matched != null) _registering = false;
           } else {
             _statusMessage = matched != null
-                ? '${matched.emoji} ${matched.roleLabel} 완료!'
-                : '미등록 태그';
+              ? '${matched.emoji} ${matched.roleLabel} 완료!' : '미등록 태그';
           }
         });
       },
-      onError: (error) {
-        if (!mounted) return;
-        setState(() { _isScanning = false; _statusMessage = error; });
-      },
+      onError: (e) { if (mounted) setState(() { _isScanning = false; _statusMessage = e; }); },
     );
   }
 
   Future<void> _registerTag() async {
-    if (_lastScannedUid == null || _nameController.text.trim().isEmpty) return;
+    if (_lastScannedUid == null || _nameCtrl.text.trim().isEmpty) return;
     final tag = await _nfc.registerTag(
-      name: _nameController.text.trim(),
-      role: _selectedRole,
-      nfcUid: _lastScannedUid!,
-    );
+      name: _nameCtrl.text.trim(), role: _selectedRole, nfcUid: _lastScannedUid!);
     if (!mounted) return;
-    setState(() {
-      _registering = false; _lastScannedUid = null;
-      _nameController.clear();
-      _statusMessage = '태그 등록 완료!';
-    });
-    _showNdefWriteDialog(tag);
+    setState(() { _registering = false; _lastScannedUid = null; _nameCtrl.clear();
+      _statusMessage = '등록 완료!'; });
+    _showNdefDialog(tag);
   }
 
-  void _showNdefWriteDialog(NfcTagConfig tag) {
+  void _showNdefDialog(NfcTagConfig tag) {
     showDialog(context: context, builder: (ctx) => AlertDialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      title: Text('NDEF 자동실행 쓰기', style: BotanicalTypo.heading(size: 18)),
-      content: Text(
-        '태그 터치 시 앱이 자동으로 열리고\n'
-        '${tag.emoji} ${tag.roleLabel}이 실행됩니다.\n\n쓰시겠습니까?',
-        style: BotanicalTypo.body()),
+      title: const Text('NDEF 쓰기'),
+      content: Text('${tag.emoji} ${tag.roleLabel} 자동실행을 쓰시겠습니까?'),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx),
-          child: Text('건너뛰기', style: TextStyle(color: _textMuted))),
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('건너뛰기')),
         ElevatedButton(
           onPressed: () { Navigator.pop(ctx); _writeNdef(tag); },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: _accent,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-          child: const Text('NDEF 쓰기', style: TextStyle(color: Colors.white))),
+          child: const Text('쓰기')),
       ],
     ));
   }
 
   Future<void> _writeNdef(NfcTagConfig tag) async {
-    setState(() { _isWritingNdef = true; _statusMessage = '태그를 가까이 대세요...'; });
-    final success = await _nfc.writeNdefToTag(
+    setState(() { _isWritingNdef = true; _statusMessage = '태그를 대세요…'; });
+    final ok = await _nfc.writeNdefToTag(
       role: tag.role, tagId: tag.id,
-      onStatus: (status) { if (mounted) setState(() => _statusMessage = status); },
-    );
+      onStatus: (s) { if (mounted) setState(() => _statusMessage = s); });
     if (!mounted) return;
-    setState(() {
-      _isWritingNdef = false;
-      _statusMessage = success ? 'NDEF 쓰기 완료!' : 'NDEF 쓰기 실패';
-    });
+    setState(() { _isWritingNdef = false; _statusMessage = ok ? 'NDEF 완료!' : 'NDEF 실패'; });
   }
 
   Future<void> _deleteTag(NfcTagConfig tag) async {
-    final confirm = await showDialog<bool>(context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text('태그 삭제', style: BotanicalTypo.heading(size: 18)),
-        content: Text('${tag.emoji} ${tag.name}을(를) 삭제하시겠습니까?', style: BotanicalTypo.body()),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false),
-            child: Text('취소', style: TextStyle(color: _textMuted))),
-          TextButton(onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('삭제', style: TextStyle(color: BotanicalColors.error))),
-        ],
-      ));
-    if (confirm == true) {
-      await _nfc.removeTag(tag.id);
-    }
+    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Text('${tag.emoji} ${tag.name} 삭제?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('취소')),
+        TextButton(onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('삭제', style: TextStyle(color: BotanicalColors.error))),
+      ],
+    ));
+    if (ok == true) await _nfc.removeTag(tag.id);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _dk ? BotanicalColors.scaffoldDark : BotanicalColors.scaffoldLight,
-      body: _nfcLoading
-        ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-            SizedBox(width: 48, height: 48,
-              child: CircularProgressIndicator(strokeWidth: 2, color: _accent)),
-            const SizedBox(height: 16),
-            Text('NFC 초기화 중...', style: BotanicalTypo.body(size: 14, color: _textMuted)),
-          ]))
-        : ListenableBuilder(
-            listenable: _nfc,
-            builder: (context, _) => _buildContent(),
-          ),
-    );
-  }
-
-  Widget _buildContent() {
-    final tags = _nfc.tags;
-    return CustomScrollView(slivers: [
-      // ─── 앱바 ───
-      SliverAppBar(
-        pinned: true,
-        backgroundColor: _dk ? BotanicalColors.scaffoldDark : BotanicalColors.scaffoldLight,
-        elevation: 0,
-        leading: IconButton(
-          icon: Icon(Icons.arrow_back_ios_new_rounded, size: 18, color: _textMain),
-          onPressed: () => Navigator.pop(context)),
-        title: Text('NFC', style: BotanicalTypo.heading(
-          size: 20, weight: FontWeight.w800, color: _textMain)),
-        centerTitle: false,
-        actions: [
-          if (_nfc.isAvailable)
-            Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: BotanicalColors.success.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(20)),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Container(width: 6, height: 6,
-                    decoration: const BoxDecoration(
-                      color: BotanicalColors.success, shape: BoxShape.circle)),
-                  const SizedBox(width: 6),
-                  Text('NFC 활성', style: BotanicalTypo.label(
-                    size: 10, weight: FontWeight.w600, color: BotanicalColors.success)),
-                ]),
-              ),
-            ),
-        ],
-      ),
-
-      SliverPadding(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
-        sliver: SliverList(delegate: SliverChildListDelegate([
-          if (!_nfc.isAvailable)
-            _warningBanner('이 기기는 NFC를 지원하지 않습니다'),
-
-          // ─── 상태 칩 ───
-          _statusRow(),
-          const SizedBox(height: 20),
-
-          // ─── 스캔 허브 ───
-          _scanHub(),
-          const SizedBox(height: 24),
-
-          // ─── 등록 폼 ───
-          if (_registering && _lastScannedUid != null && _lastMatchedTag == null)
-            _registerForm(),
-
-          // ─── 등록된 태그 목록 ───
-          Row(children: [
-            Text('등록된 태그', style: BotanicalTypo.label(
-              size: 11, weight: FontWeight.w700, letterSpacing: 1.5, color: _textMuted)),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: _accent.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10)),
-              child: Text('${tags.length}', style: BotanicalTypo.label(
-                size: 11, weight: FontWeight.w800, color: _accent)),
-            ),
-          ]),
-          const SizedBox(height: 12),
-          if (tags.isEmpty)
-            _emptyState()
-          else
-            ...tags.map((t) => _tagCard(t)),
-
-          const SizedBox(height: 24),
-
-          // ─── 수동 테스트 ───
-          _manualTestSection(),
-
-          const SizedBox(height: 24),
-
-          // ─── NFC 태그 역할 요약 ───
-          _nfcRoleSummary(),
-        ])),
-      ),
-    ]);
-  }
-
-  // ══════════════════════════════════════════
-  //  상태 칩 (외출/공부/식사)
-  // ══════════════════════════════════════════
-
-  Widget _statusRow() {
-    return Row(children: [
-      Expanded(child: _statusPill(
-        emoji: '🚪', label: _nfc.isOut ? '외출 중' : '집',
-        active: _nfc.isOut, color: const Color(0xFF3B8A6B),
-      )),
-      const SizedBox(width: 10),
-      Expanded(child: _statusPill(
-        emoji: '📚', label: _nfc.isStudying ? '공부 중' : '공부 대기',
-        active: _nfc.isStudying, color: BotanicalColors.subjectVerbal,
-      )),
-      const SizedBox(width: 10),
-      Expanded(child: _statusPill(
-        emoji: '🍽️', label: _nfc.isMealing ? '식사 중' : '식사 대기',
-        active: _nfc.isMealing, color: const Color(0xFFFF8A65),
-      )),
-    ]);
-  }
-
-  Widget _statusPill({
-    required String emoji, required String label,
-    required bool active, required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-      decoration: BoxDecoration(
-        color: active ? color.withOpacity(_dk ? 0.12 : 0.06) : _card,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: active ? color.withOpacity(0.3) : _border,
-          width: active ? 1.5 : 1),
-      ),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Text(emoji, style: const TextStyle(fontSize: 18)),
-        const SizedBox(height: 4),
-        Text(label, style: BotanicalTypo.label(
-          size: 11, weight: FontWeight.w700,
-          color: active ? color : _textMuted)),
-        if (active) ...[
-          const SizedBox(height: 4),
-          Container(width: 6, height: 6,
-            decoration: BoxDecoration(
-              color: color, shape: BoxShape.circle,
-              boxShadow: [BoxShadow(color: color.withOpacity(0.5), blurRadius: 6)])),
-        ],
-      ]),
-    );
-  }
-
-  // ══════════════════════════════════════════
-  //  스캔 허브
-  // ══════════════════════════════════════════
-
-  Widget _scanHub() {
-    final bool busy = _isScanning || _isWritingNdef;
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft, end: Alignment.bottomRight,
-          colors: _dk
-            ? [const Color(0xFF1E2D26), const Color(0xFF1A241E)]
-            : [const Color(0xFFE8F0E8), const Color(0xFFF0F5EE)]),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: _accent.withOpacity(0.15)),
-      ),
-      child: Column(children: [
-        AnimatedBuilder(
-          animation: _pulseController,
-          builder: (_, __) => Container(
-            width: 64, height: 64,
-            decoration: BoxDecoration(
-              color: _accent.withOpacity(0.08 + (_pulseController.value * (busy ? 0.08 : 0))),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _accent.withOpacity(busy ? 0.3 : 0.12))),
-            child: Icon(Icons.nfc_rounded, size: 28, color: _accent),
-          ),
-        ),
-        const SizedBox(height: 16),
-        if (_statusMessage.isNotEmpty)
-          Text(_statusMessage, textAlign: TextAlign.center,
-            style: BotanicalTypo.body(size: 13, color: _textSub)),
-        if (_statusMessage.isEmpty)
-          Text('태그를 스캔하거나 새로 등록하세요', textAlign: TextAlign.center,
-            style: BotanicalTypo.body(size: 13, color: _textMuted)),
-        const SizedBox(height: 20),
-        Row(children: [
-          Expanded(child: _actionBtn(
-            icon: Icons.sensors_rounded,
-            label: busy ? '스캔 중...' : '태그 스캔',
-            filled: true,
-            onTap: busy ? null : () => _startScan(),
-          )),
-          const SizedBox(width: 10),
-          Expanded(child: _actionBtn(
-            icon: Icons.add_rounded,
-            label: '새 태그 등록',
-            filled: false,
-            onTap: busy ? null : () => _startScan(forRegister: true),
-          )),
-        ]),
-      ]),
-    );
-  }
-
-  Widget _actionBtn({
-    required IconData icon, required String label,
-    required bool filled, VoidCallback? onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          color: filled ? _accent : Colors.transparent,
-          borderRadius: BorderRadius.circular(14),
-          border: filled ? null : Border.all(color: _accent.withOpacity(0.3))),
-        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(icon, size: 16,
-            color: filled ? Colors.white : _accent),
-          const SizedBox(width: 6),
-          Text(label, style: BotanicalTypo.label(
-            size: 12, weight: FontWeight.w700,
-            color: filled ? Colors.white : _accent)),
-        ]),
-      ),
-    );
-  }
-
-  // ══════════════════════════════════════════
-  //  등록 폼
-  // ══════════════════════════════════════════
-
-  Widget _registerForm() {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 20),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _accent.withOpacity(0.2))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('새 태그 등록', style: BotanicalTypo.heading(size: 16, color: _textMain)),
-        const SizedBox(height: 4),
-        Text('UID: $_lastScannedUid',
-          style: TextStyle(fontSize: 11, color: _textMuted, fontFamily: 'monospace')),
-        const SizedBox(height: 16),
-        TextField(controller: _nameController,
-          decoration: InputDecoration(
-            labelText: '태그 이름',
-            hintText: '예: 욕실, 책상, 현관, 독서대',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14)),
-          onChanged: (_) => setState(() {})),
-        const SizedBox(height: 16),
-        Text('역할', style: BotanicalTypo.label(
-          size: 11, weight: FontWeight.w700, letterSpacing: 1, color: _textMuted)),
-        const SizedBox(height: 8),
-        Wrap(spacing: 8, runSpacing: 8,
-          children: NfcTagRole.values.map((role) => _roleChip(role)).toList()),
-        const SizedBox(height: 16),
-        SizedBox(width: double.infinity, child: GestureDetector(
-          onTap: _nameController.text.trim().isNotEmpty ? _registerTag : null,
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            decoration: BoxDecoration(
-              color: _nameController.text.trim().isNotEmpty
-                ? _accent : _accent.withOpacity(0.3),
-              borderRadius: BorderRadius.circular(14)),
-            child: Center(child: Text('등록하기', style: BotanicalTypo.label(
-              size: 14, weight: FontWeight.w700, color: Colors.white))),
-          ),
-        )),
-      ]),
-    );
-  }
-
-  Widget _roleChip(NfcTagRole role) {
-    final selected = _selectedRole == role;
-    final tag = NfcTagConfig(id: '', name: '', role: role, createdAt: '');
-    return GestureDetector(
-      onTap: () => setState(() => _selectedRole = role),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: selected ? _accent.withOpacity(_dk ? 0.15 : 0.08) : _card,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: selected ? _accent.withOpacity(0.4) : _border,
-            width: selected ? 1.5 : 1)),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Text(tag.emoji, style: const TextStyle(fontSize: 16)),
-          const SizedBox(width: 6),
-          Text(tag.roleLabel.split(' ').first, style: BotanicalTypo.label(
-            size: 12, weight: selected ? FontWeight.w700 : FontWeight.w500,
-            color: selected ? _accent : _textSub)),
-        ]),
-      ),
-    );
-  }
-
-  // ══════════════════════════════════════════
-  //  태그 카드
-  // ══════════════════════════════════════════
-
-  Widget _tagCard(NfcTagConfig tag) {
-    final roleColor = _roleColor(tag.role);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _border)),
-      child: Row(children: [
-        Container(width: 44, height: 44,
-          decoration: BoxDecoration(
-            color: roleColor.withOpacity(_dk ? 0.12 : 0.06),
-            borderRadius: BorderRadius.circular(14)),
-          child: Center(child: Text(tag.emoji, style: const TextStyle(fontSize: 20)))),
-        const SizedBox(width: 14),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(tag.name, style: BotanicalTypo.body(
-            size: 14, weight: FontWeight.w700, color: _textMain)),
-          const SizedBox(height: 2),
-          Text(tag.roleLabel, style: BotanicalTypo.label(size: 11, color: _textMuted)),
-        ])),
-        PopupMenuButton<String>(
-          icon: Icon(Icons.more_horiz_rounded, color: _textMuted, size: 20),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          onSelected: (v) {
-            if (v == 'test') _testTag(tag);
-            if (v == 'ndef') _writeNdef(tag);
-            if (v == 'delete') _deleteTag(tag);
-          },
-          itemBuilder: (_) => [
-            PopupMenuItem(value: 'test',
-              child: Row(children: [
-                Icon(Icons.play_arrow_rounded, size: 18, color: _accent),
-                const SizedBox(width: 8),
-                const Text('수동 실행'),
-              ])),
-            PopupMenuItem(value: 'ndef',
-              child: Row(children: [
-                Icon(Icons.edit_note_rounded, size: 18, color: _accent),
-                const SizedBox(width: 8),
-                const Text('NDEF 쓰기'),
-              ])),
-            const PopupMenuItem(value: 'delete',
-              child: Row(children: [
-                Icon(Icons.delete_outline_rounded, size: 18, color: BotanicalColors.error),
-                SizedBox(width: 8),
-                Text('삭제', style: TextStyle(color: BotanicalColors.error)),
-              ])),
-          ],
-        ),
-      ]),
-    );
-  }
-
-  Future<void> _testTag(NfcTagConfig tag) async {
-    final result = await _nfc.manualTestRole(tag.role);
+  Future<void> _testRole(NfcTagRole role) async {
+    final r = await _nfc.manualTestRole(role);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('${tag.emoji} $result'),
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-    ));
+      content: Text(r), behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))));
   }
 
-  Color _roleColor(NfcTagRole role) {
-    switch (role) {
+  Color _rc(NfcTagRole r) {
+    switch (r) {
       case NfcTagRole.wake: return BotanicalColors.gold;
       case NfcTagRole.outing: return const Color(0xFF3B8A6B);
       case NfcTagRole.study: return BotanicalColors.primary;
@@ -552,137 +171,463 @@ class _NfcScreenState extends State<NfcScreen> with TickerProviderStateMixin {
     }
   }
 
-  // ══════════════════════════════════════════
-  //  수동 테스트 섹션
-  // ══════════════════════════════════════════
+  // ── Build ──
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _dk ? BotanicalColors.scaffoldDark : BotanicalColors.scaffoldLight,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent, elevation: 0,
+        foregroundColor: _main,
+        title: Text('자동화', style: BotanicalTypo.heading(size: 18, color: _main)),
+        actions: [
+          if (_nfc.isAvailable)
+            Padding(padding: const EdgeInsets.only(right: 14),
+              child: _pill('NFC', BotanicalColors.success)),
+        ],
+      ),
+      body: _nfcLoading
+        ? Center(child: CircularProgressIndicator(strokeWidth: 2, color: _ac))
+        : ListenableBuilder(listenable: _nfc, builder: (_, __) => _body()),
+    );
+  }
 
-  Widget _manualTestSection() {
-    return Container(
-      padding: const EdgeInsets.all(16),
+  Widget _pill(String t, Color c) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+    decoration: BoxDecoration(
+      color: c.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+    child: Row(mainAxisSize: MainAxisSize.min, children: [
+      Container(width: 5, height: 5,
+        decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+      const SizedBox(width: 5),
+      Text(t, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: c)),
+    ]));
+
+  Widget _body() {
+    final tags = _nfc.tags;
+    return ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 40), children: [
+      // ── 상태 ──
+      _statusBar(),
+      const SizedBox(height: 14),
+
+      // ── 태그 목록 ──
+      _label('태그  ${tags.length}'),
+      const SizedBox(height: 8),
+      if (tags.isEmpty) _empty()
+      else ...tags.map(_tagRow),
+      const SizedBox(height: 14),
+
+      // ── 스캔 ──
+      _scanRow(),
+      if (_registering && _lastScannedUid != null && _lastMatchedTag == null) ...[
+        const SizedBox(height: 10),
+        _regForm(),
+      ],
+      const SizedBox(height: 18),
+
+      // ── 설정 ──
+      _label('설정'),
+      const SizedBox(height: 8),
+      _settingsCard(),
+      const SizedBox(height: 14),
+
+      // ── 수동 테스트 ──
+      _testTile(),
+      const SizedBox(height: 14),
+
+      // ── 역할 요약 ──
+      _roleSummary(),
+    ]);
+  }
+
+  // ══════════ 상태 바 ══════════
+  Widget _statusBar() {
+    return Row(children: [
+      _sPill('🚪', _nfc.isOut ? '외출' : '집', _nfc.isOut, const Color(0xFF3B8A6B)),
+      const SizedBox(width: 8),
+      _sPill('📚', _nfc.isStudying ? '공부중' : '대기', _nfc.isStudying, BotanicalColors.subjectVerbal),
+      const SizedBox(width: 8),
+      _sPill('🍽️', _nfc.isMealing ? '식사중' : '대기', _nfc.isMealing, const Color(0xFFFF8A65)),
+    ]);
+  }
+
+  Widget _sPill(String emoji, String label, bool on, Color c) => Expanded(
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _border)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('수동 테스트', style: BotanicalTypo.label(
-          size: 11, weight: FontWeight.w700, letterSpacing: 1.5, color: _textMuted)),
-        const SizedBox(height: 12),
-        Wrap(spacing: 8, runSpacing: 8,
-          children: NfcTagRole.values.map((role) {
-            final tag = NfcTagConfig(id: '', name: '', role: role, createdAt: '');
+        color: on ? c.withOpacity(0.06) : _card,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: on ? c.withOpacity(0.25) : _bdr)),
+      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Text(emoji, style: const TextStyle(fontSize: 14)),
+        const SizedBox(width: 5),
+        Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+          color: on ? c : _muted)),
+        if (on) ...[
+          const SizedBox(width: 5),
+          Container(width: 5, height: 5,
+            decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+        ],
+      ]),
+    ),
+  );
+
+  // ══════════ 라벨 ══════════
+  Widget _label(String t) => Text(t, style: BotanicalTypo.label(
+    size: 10, weight: FontWeight.w700, letterSpacing: 1.2, color: _muted));
+
+  // ══════════ 태그 행 ══════════
+  Widget _tagRow(NfcTagConfig tag) {
+    final c = _rc(tag.role);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: _card, borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _bdr)),
+      child: Row(children: [
+        Container(width: 32, height: 32,
+          decoration: BoxDecoration(
+            color: c.withOpacity(0.06), borderRadius: BorderRadius.circular(10)),
+          child: Center(child: Text(tag.emoji, style: const TextStyle(fontSize: 16)))),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(tag.name, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: _main)),
+          Text(tag.roleLabel, style: TextStyle(fontSize: 10, color: _muted)),
+        ])),
+        _miniBtn(Icons.play_arrow_rounded, () => _testRole(tag.role)),
+        const SizedBox(width: 4),
+        _miniBtn(Icons.edit_note_rounded, () => _writeNdef(tag)),
+        const SizedBox(width: 4),
+        _miniBtn(Icons.close_rounded, () => _deleteTag(tag),
+          color: BotanicalColors.error.withOpacity(0.6)),
+      ]),
+    );
+  }
+
+  Widget _miniBtn(IconData icon, VoidCallback onTap, {Color? color}) => GestureDetector(
+    onTap: onTap,
+    child: Padding(padding: const EdgeInsets.all(4),
+      child: Icon(icon, size: 18, color: color ?? _muted)));
+
+  // ══════════ 스캔 행 ══════════
+  Widget _scanRow() {
+    final busy = _isScanning || _isWritingNdef;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: _ac.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _ac.withOpacity(0.12))),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        if (_statusMessage.isNotEmpty) ...[
+          Text(_statusMessage, style: TextStyle(fontSize: 12, color: _sub),
+            textAlign: TextAlign.center),
+          const SizedBox(height: 10),
+        ],
+        Row(children: [
+          Expanded(child: _actBtn(
+            busy ? '스캔 중…' : '태그 스캔', Icons.sensors_rounded, true,
+            busy ? null : () => _startScan())),
+          const SizedBox(width: 8),
+          Expanded(child: _actBtn(
+            '새 태그 등록', Icons.add_rounded, false,
+            busy ? null : () => _startScan(forRegister: true))),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _actBtn(String label, IconData icon, bool filled, VoidCallback? onTap) =>
+    GestureDetector(onTap: onTap, child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      decoration: BoxDecoration(
+        color: filled ? _ac : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        border: filled ? null : Border.all(color: _ac.withOpacity(0.3))),
+      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Icon(icon, size: 14, color: filled ? Colors.white : _ac),
+        const SizedBox(width: 5),
+        Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+          color: filled ? Colors.white : _ac)),
+      ]),
+    ));
+
+  // ══════════ 등록 폼 ══════════
+  Widget _regForm() => Container(
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: _card, borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: _ac.withOpacity(0.2))),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('UID: $_lastScannedUid',
+        style: TextStyle(fontSize: 10, color: _muted, fontFamily: 'monospace')),
+      const SizedBox(height: 10),
+      TextField(controller: _nameCtrl,
+        style: const TextStyle(fontSize: 13),
+        decoration: InputDecoration(
+          labelText: '태그 이름', hintText: '욕실, 책상, 현관',
+          isDense: true,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10)),
+        onChanged: (_) => setState(() {})),
+      const SizedBox(height: 10),
+      Wrap(spacing: 6, runSpacing: 6,
+        children: NfcTagRole.values.map((r) {
+          final sel = _selectedRole == r;
+          final tag = NfcTagConfig(id: '', name: '', role: r, createdAt: '');
+          return GestureDetector(
+            onTap: () => setState(() => _selectedRole = r),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: sel ? _ac.withOpacity(0.08) : _card,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: sel ? _ac.withOpacity(0.4) : _bdr)),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(tag.emoji, style: const TextStyle(fontSize: 14)),
+                const SizedBox(width: 4),
+                Text(tag.roleLabel.split(' ').first, style: TextStyle(
+                  fontSize: 11, fontWeight: sel ? FontWeight.w700 : FontWeight.w500,
+                  color: sel ? _ac : _sub)),
+              ]),
+            ),
+          );
+        }).toList()),
+      const SizedBox(height: 12),
+      SizedBox(width: double.infinity, child: GestureDetector(
+        onTap: _nameCtrl.text.trim().isNotEmpty ? _registerTag : null,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: _nameCtrl.text.trim().isNotEmpty ? _ac : _ac.withOpacity(0.3),
+            borderRadius: BorderRadius.circular(10)),
+          child: const Center(child: Text('등록', style: TextStyle(
+            fontSize: 13, fontWeight: FontWeight.w700, color: Colors.white))),
+        ),
+      )),
+    ]),
+  );
+
+  // ══════════ 설정 카드 (거치대 + 무진동 합침) ══════════
+  Widget _settingsCard() {
+    final cradle = CradleService();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: _card, borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _bdr)),
+      child: Column(children: [
+        // 거치대
+        _switchRow(
+          icon: Icons.phonelink_rounded,
+          title: '거치대 감지',
+          subtitle: _cradleEnabled
+            ? (cradle.isOnCradle ? '감지됨' : '미감지')
+            : null,
+          value: _cradleEnabled,
+          onChanged: (v) { cradle.setEnabled(v); _safeSetState(() => _cradleEnabled = v); },
+          trailing: _cradleEnabled ? GestureDetector(
+            onTap: _calibrateCradle,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: _ac.withOpacity(0.3))),
+              child: Text(cradle.isCalibrated ? '재측정' : '측정',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: _ac)),
+            ),
+          ) : null,
+        ),
+        Divider(height: 1, color: _bdr),
+        // 지오펜스 (자동 외출/귀가)
+        _switchRow(
+          icon: Icons.my_location_rounded,
+          title: '자동 외출/귀가',
+          subtitle: _geoEnabled
+            ? (GeofenceService().hasHome
+              ? (GeofenceService().isHome ? '집 (감지됨)' : '외출 중')
+              : '집 위치 미설정')
+            : 'GPS 기반 150m 반경',
+          value: _geoEnabled,
+          onChanged: (v) async {
+            await GeofenceService().setEnabled(v);
+            _safeSetState(() => _geoEnabled = v);
+          },
+          trailing: _geoEnabled ? GestureDetector(
+            onTap: _setGeoHome,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: _ac.withOpacity(0.3))),
+              child: _geoSettingHome
+                ? SizedBox(width: 12, height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 1.5, color: _ac))
+                : Text(GeofenceService().hasHome ? '재설정' : '집 설정',
+                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: _ac)),
+            ),
+          ) : null,
+        ),
+        Divider(height: 1, color: _bdr),
+        // 무진동
+        _switchRow(
+          icon: Icons.vibration,
+          title: '무진동 NFC',
+          subtitle: '터치 시 진동 억제',
+          value: _silentNfc,
+          onChanged: _nfc.isAvailable ? (v) async {
+            if (v) await _nfc.enableSilentReader();
+            else await _nfc.disableSilentReader();
+            _safeSetState(() => _silentNfc = _nfc.isSilentReaderEnabled);
+          } : null,
+        ),
+      ]),
+    );
+  }
+
+  Future<void> _setGeoHome() async {
+    _safeSetState(() => _geoSettingHome = true);
+    final ok = await GeofenceService().setHomeFromCurrentLocation();
+    if (!mounted) return;
+    _safeSetState(() => _geoSettingHome = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? '집 위치 설정 완료!' : 'GPS 위치를 가져올 수 없습니다'),
+      backgroundColor: ok ? BotanicalColors.success : BotanicalColors.error,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))));
+  }
+
+  Widget _switchRow({
+    required IconData icon, required String title, String? subtitle,
+    required bool value, ValueChanged<bool>? onChanged, Widget? trailing,
+  }) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 8),
+    child: Row(children: [
+      Icon(icon, size: 18, color: _ac),
+      const SizedBox(width: 10),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _main)),
+        if (subtitle != null)
+          Text(subtitle, style: TextStyle(fontSize: 10, color: _muted)),
+      ])),
+      if (trailing != null) ...[trailing!, const SizedBox(width: 8)],
+      SizedBox(height: 28, child: Switch(
+        value: value, onChanged: onChanged,
+        activeColor: _ac, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap)),
+    ]),
+  );
+
+  void _calibrateCradle() {
+    showDialog(context: context, barrierDismissible: false, builder: (ctx) {
+      bool measuring = false, done = false;
+      return StatefulBuilder(builder: (ctx, setDlg) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('거치대 캘리브레이션'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (done) ...[
+            const Icon(Icons.check_circle_rounded, size: 40, color: Color(0xFF10B981)),
+            const SizedBox(height: 8),
+            const Text('완료!'),
+          ] else if (measuring) ...[
+            const SizedBox(width: 40, height: 40, child: CircularProgressIndicator(strokeWidth: 3)),
+            const SizedBox(height: 8),
+            const Text('측정 중… (5초)'),
+          ] else ...[
+            Icon(Icons.phone_android_rounded, size: 40, color: _muted),
+            const SizedBox(height: 8),
+            const Text('폰을 거치대에 올려놓고\n측정을 시작하세요.', textAlign: TextAlign.center),
+          ],
+        ]),
+        actions: [
+          if (done)
+            TextButton(onPressed: () { Navigator.pop(ctx); _safeSetState(() {}); },
+              child: const Text('확인'))
+          else if (!measuring) ...[
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('취소')),
+            TextButton(onPressed: () async {
+              setDlg(() => measuring = true);
+              await CradleService().calibrate();
+              setDlg(() { measuring = false; done = true; });
+            }, child: const Text('측정 시작')),
+          ],
+        ],
+      ));
+    });
+  }
+
+  // ══════════ 수동 테스트 ══════════
+  Widget _testTile() => Container(
+    decoration: BoxDecoration(
+      color: _card, borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: _bdr)),
+    clipBehavior: Clip.antiAlias,
+    child: ExpansionTile(
+      tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
+      childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+      initiallyExpanded: false,
+      title: Text('수동 테스트', style: TextStyle(fontSize: 11,
+        fontWeight: FontWeight.w700, letterSpacing: 1, color: _muted)),
+      children: [
+        Wrap(spacing: 6, runSpacing: 6,
+          children: NfcTagRole.values.map((r) {
+            final tag = NfcTagConfig(id: '', name: '', role: r, createdAt: '');
             return GestureDetector(
-              onTap: () async {
-                final result = await _nfc.manualTestRole(role);
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text('${tag.emoji} $result'),
-                  behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ));
-              },
+              onTap: () => _testRole(r),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
-                  color: _roleColor(role).withOpacity(_dk ? 0.1 : 0.06),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: _roleColor(role).withOpacity(0.2))),
+                  color: _rc(r).withOpacity(0.06),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: _rc(r).withOpacity(0.2))),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Text(tag.emoji, style: const TextStyle(fontSize: 16)),
-                  const SizedBox(width: 6),
-                  Text(tag.roleLabel.split(' ').first, style: BotanicalTypo.label(
-                    size: 12, weight: FontWeight.w600,
-                    color: _roleColor(role))),
+                  Text(tag.emoji, style: const TextStyle(fontSize: 14)),
+                  const SizedBox(width: 4),
+                  Text(tag.roleLabel.split(' ').first, style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w600, color: _rc(r))),
                 ]),
               ),
             );
           }).toList()),
-      ]),
-    );
-  }
+      ],
+    ),
+  );
 
-  // ══════════════════════════════════════════
-  //  빈 상태
-  // ══════════════════════════════════════════
-
-  Widget _emptyState() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
-      decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _border)),
-      child: Column(children: [
-        Icon(Icons.nfc_rounded, size: 40, color: _textMuted.withOpacity(0.4)),
-        const SizedBox(height: 12),
-        Text('등록된 태그가 없습니다', style: BotanicalTypo.body(
-          size: 14, weight: FontWeight.w600, color: _textMuted)),
-        const SizedBox(height: 4),
-        Text('상단에서 새 태그를 등록해보세요', style: BotanicalTypo.label(
-          size: 12, color: _textMuted.withOpacity(0.6))),
-      ]),
-    );
-  }
-
-  // ══════════════════════════════════════════
-  //  NFC 역할 요약 (이모지)
-  // ══════════════════════════════════════════
-
-  Widget _nfcRoleSummary() {
+  // ══════════ 역할 요약 ══════════
+  Widget _roleSummary() {
     final roles = [
-      ('🚿', '기상', NfcTagRole.wake),
-      ('🚪', '외출', NfcTagRole.outing),
-      ('📚', '공부', NfcTagRole.study),
-      ('🍽️', '식사', NfcTagRole.meal),
+      ('🚿', '기상', NfcTagRole.wake), ('🚪', '외출', NfcTagRole.outing),
+      ('📚', '공부', NfcTagRole.study), ('🍽️', '식사', NfcTagRole.meal),
       ('🛏️', '취침', NfcTagRole.sleep),
     ];
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-      decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _border)),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: roles.map((r) {
-          final hasTag = _nfc.tags.any((t) => t.role == r.$3);
-          return Column(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 38, height: 38,
-              decoration: BoxDecoration(
-                color: hasTag
-                  ? _accent.withOpacity(_dk ? 0.12 : 0.08)
-                  : (_dk ? Colors.white.withOpacity(0.03) : Colors.grey.shade100),
-                borderRadius: BorderRadius.circular(12),
-                border: hasTag ? Border.all(color: _accent.withOpacity(0.3), width: 1) : null),
-              child: Center(child: Text(r.$1, style: TextStyle(
-                fontSize: 16,
-                color: hasTag ? null : Colors.grey.withOpacity(0.4)))),
-            ),
-            const SizedBox(height: 4),
-            Text(r.$2, style: BotanicalTypo.label(
-              size: 9, weight: FontWeight.w600,
-              color: hasTag ? _textMain : _textMuted.withOpacity(0.5))),
-          ]);
-        }).toList(),
-      ),
-    );
+    return Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: roles.map((r) {
+        final has = _nfc.tags.any((t) => t.role == r.$3);
+        return Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 34, height: 34,
+            decoration: BoxDecoration(
+              color: has ? _ac.withOpacity(0.08) : Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(10),
+              border: has ? Border.all(color: _ac.withOpacity(0.25)) : null),
+            child: Center(child: Text(r.$1, style: TextStyle(fontSize: 14,
+              color: has ? null : Colors.grey.withOpacity(0.4))))),
+          const SizedBox(height: 3),
+          Text(r.$2, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w600,
+            color: has ? _main : _muted.withOpacity(0.5))),
+        ]);
+      }).toList());
   }
 
-  Widget _warningBanner(String msg) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: BotanicalColors.error.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: BotanicalColors.error.withOpacity(0.15))),
-      child: Row(children: [
-        const Icon(Icons.warning_amber_rounded, color: BotanicalColors.error, size: 20),
-        const SizedBox(width: 10),
-        Expanded(child: Text(msg, style: BotanicalTypo.body(
-          size: 13, color: BotanicalColors.error))),
-      ]),
-    );
-  }
+  // ══════════ 빈 상태 ══════════
+  Widget _empty() => Container(
+    padding: const EdgeInsets.symmetric(vertical: 24),
+    decoration: BoxDecoration(
+      color: _card, borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: _bdr)),
+    child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      Icon(Icons.nfc_rounded, size: 28, color: _muted.withOpacity(0.3)),
+      const SizedBox(height: 8),
+      Text('등록된 태그 없음', style: TextStyle(fontSize: 12, color: _muted)),
+    ])),
+  );
 }

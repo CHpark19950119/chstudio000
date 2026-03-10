@@ -11,7 +11,118 @@
 - [ ] 투두 저장 → today.todos 리스트 동기화 확인
 - [ ] 텔레그램 NFC → 다영, 배포 → 나 확인
 
+## 2026-03-10
+### v10.1 — 플리커링 근본수정 + NFC 경량화 + 식사독립
+- [x] **시간 플리커링 근본 해결**: 스트림 리스너에서 timeRecords 파싱 완전 제거 (today doc 단일 소스)
+- [x] **웹앱 충돌 원인 확인**: `/c/dev/CH-STUDIO` 웹앱이 같은 study doc에 동시 write → 스트림 분리로 해결
+- [x] **식사 DayState 분리**: eating 제거 → `_isMealing` 독립 boolean (공부 상태 변경 없음)
+- [x] **루틴카드 DayState 직접 사용**: `_nfc.state` 기반 상태 판별 (TimeRecord fallback 유지)
+
+### v10.0 — NFC Service DayState FSM 리빌드
+- [x] **DayState enum FSM**: boolean 토글 → `idle/awake/outing/studying/returned/sleeping` 상태 머신
+- [x] **태그 중복 방지**: 동일 역할 태그 30초 쿨다운 (실수 방지)
+- [x] **자동 기상**: idle 상태에서 wake 외 태그 태핑 → 자동 기상 기록
+- [x] **리마인더**: 기상 60분 후 비활동 알림, 공부 4시간 후 식사 알림
+- [x] **일일 요약**: 취침 태그 시 Telegram 일일 요약 (순공/식사/외출/활동시간)
+- [x] **Telegram 정확성**: 모든 시간을 `DateTime.now()` 기준으로 전송 (추정값 사용 안 함)
+- [x] **Firestore write timeout**: 모든 updateTimeRecord에 5초 timeout 적용
+- [x] **GeofenceService 생성**: 집 위치 100m 반경 자동 외출/귀가 감지 (MethodChannel 기반)
+- [x] **식사 상태 복귀**: 식사 전 상태 자동 복귀 (공부 중→식사→공부 재개)
+
+## 2026-03-09
+### v9.13 — NFC/시간기록 캐시 동기화 버그 수정
+- [x] **_bgRefreshDoc write-protect 가드 추가**: 쓰기 직후 백그라운드 Firebase 갱신이 Hive 캐시 덮어쓰기 방지
+- [x] **updateTodayField await 수정**: Hive today 캐시 비동기 저장 누락 수정
+- [x] **updateTimeRecord await 수정**: updateStudyField / updateTodayField 비동기 완료 대기
+- [x] **write-protect 시간 10초로 연장**: 네트워크 지연 대응
+
 ## 2026-03-08
+### v9.12 — 오더탭 통계 개선 + 포커스존 즉시 돌입
+- [x] **기록탭 강화**: 순공시간 추이 LineChart (주간/월간) + 과목별 누적시간 수평 BarChart + 최고 기록일 하이라이트
+- [x] **과목 Firestore 동기화**: SubjectConfig에 Firestore 양방향 sync 추가 (다기기 대비)
+- [x] **오더 "오늘" 탭 리디자인**: NFC 타임라인 중심 → 오늘의 습관/목표 이행 현황 + NFC는 ExpansionTile로 접기
+- [x] **오더 "통계" 탭 리디자인**: 목표 달성률/습관 정착 파이프라인/스트릭 순위/주간 히트맵/목표 진행 타임라인
+- [x] **포커스존 즉시 돌입**: 과목 선택 + 모드 선택 → 시작 버튼 → FocusScreen 이머시브 직행 (중간 카드 단계 제거)
+- [x] **포커스 재진입 가드**: FocusScreen 복귀 시 무한 루프 방지 (_focusScreenOpen 플래그)
+
+### v9.11 — 자동화 화면 컴팩트 리디자인
+- [x] **NFC & 자동화 → 자동화**: 화면 이름 변경
+- [x] **컴팩트 레이아웃**: SliverAppBar → Scaffold+AppBar+ListView, 세로 길이 대폭 축소
+- [x] **상태바**: 가로 pill 형태 (emoji+label), 한 줄에 표시
+- [x] **태그 행**: 한줄 Row + 미니 액션 버튼 (play/ndef/delete), PopupMenu 제거
+- [x] **스캔 영역**: 소형 카드 + 상태 메시지 + 2버튼
+- [x] **설정 통합**: 거치대 토글 + 무음 NFC 토글 → 단일 카드
+- [x] **설정 화면**: 진입 카드 텍스트 '자동화'로 통일
+
+### v9.10 — 홈 대시보드 정리 + 도서관 배치도 완성
+- [x] **Habitat FAB 임시 비활성화**: CreatureFloatButton, HabitatScreen 진입 경로 제거
+- [x] **대시보드 순서 변경**: NFC → 도서관 → 순공시간 → 성적 → 포커스 → 메모 → 위치요약 → 퀵툴
+- [x] **날씨+성적 2컬럼 제거**: 성적만 단독 카드로 분리 (날씨는 헤더에 이미 존재)
+- [x] **위치요약 카드 추가**: 일간 타임라인 대시보드에 표시
+- [x] **도서관 배치도**: 단일 열람실 + 좌측 복도, 문 2개 (H-I, I-J), 항상 라이트 모드
+- [x] **좌석 디자인**: 장애인/이용불가 → 희미 윤곽, 이용중 → 빗금 패턴, 스탠드 → 원형+S뱃지
+
+### v9.9 — 도서관 좌석 배치도 CustomPainter 전환
+- [x] **Flame → CustomPainter 전면 전환**: `library_floor_game.dart` 삭제
+- [x] **세로 레이아웃**: 1번 하단(입구) → 56번 상단(안쪽 벽), 블록 G→A 아래→위
+- [x] **입구 + 통로**: 하단 벽 열린 부분 + 좌측 세로 복도 표현
+- [x] **좌석 도트**: glow + pulse(이용중), 입체 하이라이트, 이용불가 ✕ 표시
+- [x] **하단 블록 H/I/J**: 입구 아래 가로 배치
+- [x] **InteractiveViewer**: 핀치 줌(0.6~4x) + 패닝
+- [x] **탭 말풍선**: glassmorphism 스타일, 2초 후 자동 사라짐
+- [x] **60초 자동 갱신**
+- [x] 다크/라이트 분기, 나무 텍스처 책상, 이중 벽선
+
+### v9.8 — 크리쳐 3D 스프라이트 시트 교체
+- [x] **하드코딩 픽셀 배열 전면 제거**: egg/baby/junior/master/legend × idle/walk/blink 전부 삭제
+- [x] **3D 복셀 스프라이트 시트**: `creature_3d_sheet_128.png` (768×768, 6×6 그리드, 128×128 프레임)
+- [x] **36프레임 SpriteAnimation**: 10fps (stepTime 0.1), 수면 시 0.3으로 감속
+- [x] **스테이지별 스케일링**: EGG=0.5x, BABY=0.65x, JUNIOR=0.8x, SENIOR=1.0x, LEGEND=1.2x
+- [x] **상태 머신 유지**: idle(부유), walk(좌우이동+flip), jump(탭), happy(경쾌), sleep(zzZ)
+- [x] **LEGEND 금빛 오라**: MaskFilter.blur 글로우, sin 맥동
+- [x] **MiniCreaturePainter**: 미니 새 아이콘으로 단순화 (CustomPainter에서 스프라이트 시트 불가)
+
+### v9.7 — 도서관 Flame 탑다운 뷰 v2
+- [x] **좌석 방향 수정**: 1번석 우측 배치 (실제 도서관 일치)
+- [x] **입구 위치 수정**: 하단 블록 사이 (64-72 / 78-84 통로) + 입구 화살표
+- [x] **가로 7블록 실제 레이아웃** + 하단 3블록 (A→G, 좌→우)
+- [x] **도트 게임 스타일**: glow + pulse, 점유(빨강)/비점유(초록) 명확 구분
+  - MaskFilter.blur 외부 발광, 점유는 pulse 애니메이션
+  - 이용불가: 어두운 회색 + ✕
+- [x] **책상 개선**: 그라디언트 나무 텍스처 + 우드 그레인 + 중앙 디바이더 + 그림자
+- [x] 벽 + 하단 입구 개구부, 8px 그리드 패턴, 다크/라이트 대응
+- [x] fitWidth 초기 줌, 핀치 줌/패닝, 좌석 탭 말풍선
+- [x] 84석 파싱 100%
+
+### v9.6.2 — 좌석 배치도 완전 개편
+- [x] **ASP.NET POST 2단계 크롤링**: GET→ViewState 추출→POST(Roon_no=2)로 room 2(일반열람실) 84석 전체 파싱
+  - 기존 GET은 room 1(노트리스, 34석)만 반환 → POST로 room 전환 필수
+- [x] **좌석 그리드 90° 회전**: 세로형 폰 최적화
+  - 상단 56석: 7그룹 × 2행 × 4열 (입구→안쪽 순서)
+  - 하단 28석: 3서브그룹 가로 배치 (57-64 / 65-78 / 79-84)
+- [x] dotAll 정규식 + room_content 영역 스코핑으로 파싱 정확도 개선
+- [x] 파싱 결과: 84/84 seats 확인 (logcat)
+
+### v9.6.1 — 좌석 배치도 버그 수정
+- [x] 좌석 그리드 overflow 수정: `LayoutBuilder`로 화면 너비에 맞춰 동적 셀 크기 계산
+- [x] CSS 클래스 파싱 수정: `int` → `String` 비교 (`Style1` vs `Style10` 정확 구분)
+- [x] 하단 행(57~84) 레이아웃 정상 표시 확인
+
+### v9.6 — 부곡도서관 좌석 현황
+- [x] **홈 화면 도서관 카드 추가** (잔여좌석/이용률 실시간)
+  - `home_library_card.dart`: part of home_screen, extension 패턴
+  - 잔여좌석 큰 숫자 + 이용률 원형 게이지 + 상태 뱃지 (여유/거의만석/만석)
+  - 탭 → 좌석 배치도 화면 진입
+- [x] **좌석 배치도 화면** (84석 실제 레이아웃, 상태별 색상)
+  - `library_seat_map_screen.dart`: InteractiveViewer 핀치 줌
+  - 상단 요약 스트립 + 좌석 그리드 + 하단 범례
+  - Pull-to-refresh + 새로고침 버튼
+- [x] **library_service.dart**: HTTP 크롤링 + 30초 캐시
+  - 부곡도서관 ASP.NET 좌석 현황 페이지 파싱
+  - 요약 테이블 (data-room_no="2") + 개별 좌석 CSS 클래스 파싱
+  - SeatStatus: available/standing/disabled/unavailable/inUse
+- [x] AndroidManifest: `usesCleartextTraffic=true` (HTTP 서버 접속용)
+
 ### v9.5 Statistics Concentration + Cradle Fix + Weekly Chart Removal
 - [x] **통계 화면: 세션별 집중도 + 시간별 집중도**
   - `_sessionConcentrationCard()`: 세션별 집중률(%) 바 — 80%↑ 초록, 50~80 노랑, 50↓ 빨강

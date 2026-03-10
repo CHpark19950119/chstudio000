@@ -1,11 +1,10 @@
 part of 'nfc_service.dart';
 
-/// TimeRecord helper — copy existing fields, override only specified ones
+/// TimeRecord helper — 기존 필드 보존, 지정된 필드만 오버라이드
 TimeRecord _withFields(String date, TimeRecord? e, {
   String? wake, String? study, String? studyEnd,
   String? outing, String? returnHome, String? bedTime,
-  List<MealEntry>? meals,
-  bool clearReturnHome = false,
+  List<MealEntry>? meals, bool clearReturnHome = false,
 }) => TimeRecord(
   date: date,
   wake: wake ?? e?.wake,
@@ -15,356 +14,335 @@ TimeRecord _withFields(String date, TimeRecord? e, {
   returnHome: clearReturnHome ? null : (returnHome ?? e?.returnHome),
   arrival: e?.arrival,
   bedTime: bedTime ?? e?.bedTime,
-  mealStart: e?.mealStart,
-  mealEnd: e?.mealEnd,
+  mealStart: e?.mealStart, mealEnd: e?.mealEnd,
   meals: meals ?? e?.meals,
 );
 
 /// ═══════════════════════════════════════════════════════════
-/// NFC — Role Action Handlers
+/// NFC — DayState FSM Handlers (식사 독립 추적)
 /// ═══════════════════════════════════════════════════════════
 extension _NfcActionHandlers on NfcService {
 
-  // ── 기상 (wake) ──
+  // ═══ 기상 (wake) ═══
 
-  Future<void> _handleWake(String dateStr, String timeStr) async {
-    _log('기상 처리 시작: $dateStr $timeStr');
-
+  Future<void> _handleWake(String dateStr, String timeStr, {bool auto = false}) async {
+    if (_state != DayState.idle && _state != DayState.sleeping && !auto) {
+      _emitAction('wake_already', '🚿', '이미 기상됨');
+      return;
+    }
     try {
       final fb = FirebaseService();
-      final records = await fb.getTimeRecords();
+      final records = await fb.getTimeRecords().timeout(const Duration(seconds: 5));
       final e = records[dateStr];
-      if (e?.wake != null) {
-        _emitAction('wake_already', '🚿', '이미 기상 기록됨 (${e!.wake})');
+      if (e?.wake != null && !auto) {
+        _emitAction('wake_already', '🚿', '이미 기상 (${e!.wake})');
         return;
       }
-      await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, wake: timeStr));
-      await _notifyNativeResult(title: '기상 인증', body: '기상시간 $timeStr 기록 완료');
-      _sendNfc('⏰ 기상 $timeStr (집)');
-      _isOut = false; _isStudying = false; _isMealing = false;
-      await _saveToggleState();
-      _emitAction('wake', '🚿', '기상시간 $timeStr 기록');
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('pending_qr_wake');
-      await prefs.remove('pending_qr_wake_time');
+      await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, wake: timeStr))
+          .timeout(const Duration(seconds: 5));
+
+      _state = DayState.awake;
+      await _saveState();
+      _startWakeReminder();
+
+      final tgTime = DateFormat('HH:mm').format(DateTime.now());
+      if (!auto) {
+        _sendNfc('⏰ 기상 $tgTime');
+        _notifyNative(title: '기상 인증', body: '기상 $tgTime');
+        _emitAction('wake', '🚿', '기상 $tgTime');
+      } else {
+        _sendNfc('⏰ 자동 기상 $tgTime');
+        _emitAction('wake_auto', '🚿', '자동 기상');
+      }
       _triggerWidgetUpdate();
     } catch (e) {
       _log('Wake 에러: $e');
-      await _notifyNativeResult(title: 'NFC 처리 실패', body: '기상 기록 실패');
     }
   }
 
-  // ── 외출/귀가 토글 (outing) ──
+  // ═══ 외출/귀가 (outing) ═══
 
-  Future<void> _handleOutingToggle(String dateStr, String timeStr) async {
-    _log('외출 토글: isOut=$_isOut → ${!_isOut}');
+  Future<void> _handleOuting(String dateStr, String timeStr) async {
+    _log('외출: state=${_state.name}');
     try {
       final fb = FirebaseService();
-      final records = await fb.getTimeRecords();
+      final records = await fb.getTimeRecords().timeout(const Duration(seconds: 5));
       final e = records[dateStr];
+      final tgTime = DateFormat('HH:mm').format(DateTime.now());
 
-      if (!_isOut) {
-        _isOut = true;
+      if (_state == DayState.outing) {
+        // ── 귀가 ──
+        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, returnHome: timeStr))
+            .timeout(const Duration(seconds: 5));
+        String dur = '';
+        if (e?.outing != null) {
+          final m = _timeDiffMin(e!.outing!, timeStr);
+          if (m > 0) dur = ' (${_fmtMin(m)})';
+        }
+        _state = DayState.returned;
+        await _saveState();
+        _sendNfc('🏠 귀가 $tgTime$dur');
+        _notifyNative(title: '귀가', body: '귀가 $tgTime$dur');
+        _emitAction('outing_end', '🏠', '귀가 $tgTime$dur');
+      } else {
+        // ── 외출 ──
         await fb.updateTimeRecord(dateStr,
-            _withFields(dateStr, e, outing: timeStr, clearReturnHome: true));
-        // GPS one-shot
-        String locStr = '';
+            _withFields(dateStr, e, outing: timeStr, clearReturnHome: true))
+            .timeout(const Duration(seconds: 5));
+        String loc = '';
         try {
           final pos = await LocationService().getCurrentPosition();
-          if (pos != null) locStr = ' (${LocationService.formatPosition(pos)})';
+          if (pos != null) loc = ' (${LocationService.formatPosition(pos)})';
         } catch (_) {}
-        await _notifyNativeResult(title: 'NFC 처리 완료', body: '외출 시작 $timeStr');
-        _sendNfc('🚶 외출 $timeStr$locStr');
-        _emitAction('outing_start', '🚪', '외출 $timeStr$locStr');
-      } else {
-        _isOut = false;
-        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, returnHome: timeStr));
-        String durMsg = '';
-        if (e?.outing != null) {
-          final outMin = _timeDiffMin(e!.outing!, timeStr);
-          if (outMin > 0) durMsg = ' (외출 ${_formatMin(outMin)})';
-        }
-        await _notifyNativeResult(title: 'NFC 처리 완료', body: '귀가 $timeStr$durMsg');
-        _sendNfc('🏠 귀가 $timeStr$durMsg');
-        _emitAction('outing_end', '🏠', '귀가 $timeStr$durMsg');
+        _state = DayState.outing;
+        await _saveState();
+        _cancelReminders();
+        _sendNfc('🚶 외출 $tgTime$loc');
+        _notifyNative(title: '외출', body: '외출 $tgTime');
+        _emitAction('outing_start', '🚪', '외출 $tgTime$loc');
       }
-      await _saveToggleState();
     } catch (e) {
       _log('Outing 에러: $e');
-      await _notifyNativeResult(title: 'NFC 처리 실패', body: '외출 토글 실패');
     }
   }
 
-  // ── 공부 시작 / 재개 / 종료 (study) ──
+  // ═══ 공부 (study) ═══
 
-  Future<void> _handleStudyToggle(String dateStr, String timeStr) async {
-    _log('공부 토글: isStudying=$_isStudying, isMealing=$_isMealing, isOut=$_isOut');
+  Future<void> _handleStudy(String dateStr, String timeStr) async {
+    _log('공부: state=${_state.name}');
     try {
       final fb = FirebaseService();
-      final records = await fb.getTimeRecords();
+      final records = await fb.getTimeRecords().timeout(const Duration(seconds: 5));
       final e = records[dateStr];
+      final tgTime = DateFormat('HH:mm').format(DateTime.now());
 
-      // Case 1: 식사 중 → 공부 재개 (식사 종료 + 공부 복귀)
-      if (_isMealing) {
-        _isMealing = false;
-        _isStudying = true;
-        _wasStudyingBeforeMeal = false;
-        final meals = List<MealEntry>.from(e?.meals ?? []);
-        final openIdx = meals.lastIndexWhere((m) => m.end == null);
-        int mealMin = 0;
-        if (openIdx >= 0) {
-          meals[openIdx] = meals[openIdx].withEnd(timeStr);
-          mealMin = meals[openIdx].durationMin ?? 0;
-        }
-        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, meals: meals));
-        final durMsg = mealMin > 0 ? '식사 ${_formatMin(mealMin)}' : '식사';
-        await _notifyNativeResult(title: '공부 재개', body: '식사 종료 → 공부 복귀 ($durMsg)');
-        _sendNfc('📚 공부 재개 $timeStr ($durMsg)');
-        _emitAction('study_resume', '📚', '공부 재개 ($durMsg)');
-        await _saveToggleState();
-        _triggerWidgetUpdate();
-        return;
-      }
-
-      // Case 2: 외출 중 → 공부 재개 (외출 종료 + 공부 복귀)
-      if (_isOut) {
-        _isOut = false;
-        _isStudying = true;
-        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, returnHome: timeStr));
-        String durMsg = '외출';
+      // Case 1: 외출 중 → 귀가 + 공부 재개
+      if (_state == DayState.outing) {
+        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, returnHome: timeStr))
+            .timeout(const Duration(seconds: 5));
+        String dur = '외출';
         if (e?.outing != null) {
-          final outMin = _timeDiffMin(e!.outing!, timeStr);
-          if (outMin > 0) durMsg = '외출 ${_formatMin(outMin)}';
+          final m = _timeDiffMin(e!.outing!, timeStr);
+          if (m > 0) dur = '외출 ${_fmtMin(m)}';
         }
-        await _notifyNativeResult(title: '공부 재개', body: '귀가 → 공부 복귀 ($durMsg)');
-        _sendNfc('📚 공부 재개 $timeStr ($durMsg)');
-        _emitAction('study_resume', '📚', '공부 재개 ($durMsg)');
-        await _saveToggleState();
+        _state = DayState.studying;
+        await _saveState();
+        _startMealReminder();
+        _sendNfc('📚 공부 재개 $tgTime ($dur)');
+        _notifyNative(title: '공부 재개', body: '귀가 → 공부 ($dur)');
+        _emitAction('study_resume', '📚', '공부 재개 ($dur)');
         _triggerWidgetUpdate();
         return;
       }
 
-      // Case 3: 공부 중 → 종료
-      if (_isStudying) {
-        _isStudying = false;
-        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, studyEnd: timeStr));
-        String durMsg = '';
-        if (e?.study != null) {
-          final netMin = _calcNetStudyMin(e!, timeStr);
-          if (netMin > 0) durMsg = ' (순공 ${_formatMin(netMin)})';
+      // Case 2: 공부 중 → 종료
+      if (_state == DayState.studying) {
+        // 열린 식사 닫기
+        final meals = List<MealEntry>.from(e?.meals ?? []);
+        if (_isMealing) {
+          final openIdx = meals.lastIndexWhere((m) => m.end == null);
+          if (openIdx >= 0) meals[openIdx] = meals[openIdx].withEnd(timeStr);
+          _isMealing = false;
         }
-        await _notifyNativeResult(title: '공부 종료', body: '공부 종료 $timeStr$durMsg');
-        _sendNfc('📚 공부 종료 $timeStr$durMsg');
-        _emitAction('study_end', '📚', '공부종료 $timeStr$durMsg');
-        await _saveToggleState();
+        await fb.updateTimeRecord(dateStr,
+            _withFields(dateStr, e, studyEnd: timeStr, meals: meals.isNotEmpty ? meals : null))
+            .timeout(const Duration(seconds: 5));
+        String dur = '';
+        if (e?.study != null) {
+          final net = _calcNetStudy(e!, timeStr);
+          if (net > 0) dur = ' (순공 ${_fmtMin(net)})';
+        }
+        _state = DayState.returned;
+        await _saveState();
+        _cancelReminders();
+        _sendNfc('📚 공부 종료 $tgTime$dur');
+        _notifyNative(title: '공부 종료', body: '공부 종료 $tgTime$dur');
+        _emitAction('study_end', '📚', '공부종료 $tgTime$dur');
         return;
       }
 
-      // Case 4: idle → 새 공부 시작
-      _isStudying = true;
-      final tagPlace = _findTagPlaceName(NfcTagRole.study);
-      await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, study: timeStr));
-      final placeMsg = tagPlace != null ? ' ($tagPlace)' : '';
-      await _notifyNativeResult(title: '공부 시작', body: '공부 시작 $timeStr$placeMsg');
-      _sendNfc('📚 공부 시작 $timeStr$placeMsg');
-      _emitAction('study_start', '📚', '공부시작 $timeStr$placeMsg');
+      // Case 3: 새 공부 시작
+      final place = _findTagPlace(NfcTagRole.study);
+      await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, study: timeStr))
+          .timeout(const Duration(seconds: 5));
+      final placeMsg = place != null ? ' ($place)' : '';
+      _state = DayState.studying;
+      await _saveState();
+      _startMealReminder();
+      _sendNfc('📚 공부 시작 $tgTime$placeMsg');
+      _notifyNative(title: '공부 시작', body: '공부 시작 $tgTime$placeMsg');
+      _emitAction('study_start', '📚', '공부시작 $tgTime$placeMsg');
       _triggerWidgetUpdate();
-      await _saveToggleState();
     } catch (e) {
       _log('Study 에러: $e');
-      await _notifyNativeResult(title: 'NFC 처리 실패', body: '공부 토글 실패');
     }
   }
 
-  // ── 수면시작 (sleep) ──
+  // ═══ 식사 (meal) — DayState 변경 없음 ═══
 
-  Future<void> _handleSleep(String dateStr, String timeStr) async {
-    _log('수면시작 처리: $dateStr $timeStr');
+  Future<void> _handleMeal(String dateStr, String timeStr) async {
+    _log('식사: mealing=$_isMealing');
     try {
       final fb = FirebaseService();
-      final records = await fb.getTimeRecords();
-
-      // UL-2: 오전 4시~7시 → 전날 bedTime 없으면 전날로 귀속
-      final now = DateTime.now();
-      if (now.hour >= 4 && now.hour < 7) {
-        final yesterday = DateFormat('yyyy-MM-dd').format(
-            now.subtract(const Duration(days: 1)));
-        if (records[yesterday]?.bedTime == null) {
-          _log('UL-2: 전날($yesterday) bedTime 미기록 → 전날로 귀속');
-          dateStr = yesterday;
-        }
-      }
-
-      final e = records[dateStr];
-
-      // 열린 식사 닫기
-      final meals = List<MealEntry>.from(e?.meals ?? []);
-      if (_isMealing) {
-        _isMealing = false;
-        final openIdx = meals.lastIndexWhere((m) => m.end == null);
-        if (openIdx >= 0) meals[openIdx] = meals[openIdx].withEnd(timeStr);
-      }
-
-      // 공부 중이면 종료
-      String? finalStudyEnd;
-      if (_isStudying) {
-        _isStudying = false;
-        if (e?.study != null && e?.studyEnd == null) {
-          finalStudyEnd = timeStr;
-        }
-      }
-
-      await fb.updateTimeRecord(dateStr, _withFields(dateStr, e,
-          studyEnd: finalStudyEnd, bedTime: timeStr, meals: meals));
-      await _saveToggleState();
-
-      // 오늘 순공시간 계산
-      String netMsg = '';
-      final studyStart = e?.study;
-      final studyEndFinal = finalStudyEnd ?? e?.studyEnd;
-      if (studyStart != null && studyEndFinal != null) {
-        final totalMin = _timeDiffMin(studyStart, studyEndFinal);
-        int mealMin = 0;
-        for (final m in meals) {
-          if (m.durationMin != null) mealMin += m.durationMin!;
-        }
-        final netMin = (totalMin - mealMin).clamp(0, 1440);
-        if (netMin > 0) netMsg = ' (오늘 순공 ${_formatMin(netMin)})';
-      }
-
-      await _notifyNativeResult(title: '수면시작', body: '취침 $timeStr$netMsg — 좋은 밤 되세요');
-      _sendNfc('😴 취침 $timeStr$netMsg');
-      _emitAction('sleep', '🛏️', '취침시간 $timeStr$netMsg');
-      _triggerWidgetUpdate();
-    } catch (e) {
-      _log('Sleep 에러: $e');
-      await _notifyNativeResult(title: 'NFC 처리 실패', body: '수면 기록 실패');
-    }
-  }
-
-  // ── 식사 토글 (meal) ──
-
-  Future<void> _handleMealToggle(String dateStr, String timeStr) async {
-    _log('식사 토글: isMealing=$_isMealing → ${!_isMealing}');
-    try {
-      final fb = FirebaseService();
-      final records = await fb.getTimeRecords();
+      final records = await fb.getTimeRecords().timeout(const Duration(seconds: 5));
       final e = records[dateStr];
       final meals = List<MealEntry>.from(e?.meals ?? []);
+      final tgTime = DateFormat('HH:mm').format(DateTime.now());
 
       if (!_isMealing) {
-        _wasStudyingBeforeMeal = _isStudying;
+        // ── 식사 시작 ──
         _isMealing = true;
         meals.add(MealEntry(start: timeStr));
-        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, meals: meals));
-        // GPS one-shot
-        String locStr = '';
+        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, meals: meals))
+            .timeout(const Duration(seconds: 5));
+        String loc = '';
         try {
           final pos = await LocationService().getCurrentPosition();
-          if (pos != null) locStr = ' (${LocationService.formatPosition(pos)})';
+          if (pos != null) loc = ' (${LocationService.formatPosition(pos)})';
         } catch (_) {}
-        await _notifyNativeResult(
-            title: '식사 시작', body: '식사 시작 $timeStr (${meals.length}번째)');
-        _sendNfc('🍽 식사 시작 $timeStr$locStr');
-        _emitAction('meal_start', '🍽️', '식사 시작 $timeStr');
+        await _saveState();
+        _sendNfc('🍽 식사 시작 $tgTime$loc');
+        _notifyNative(title: '식사 시작', body: '식사 시작 $tgTime (${meals.length}번째)');
+        _emitAction('meal_start', '🍽️', '식사 시작 $tgTime');
       } else {
+        // ── 식사 종료 ──
         _isMealing = false;
         final openIdx = meals.lastIndexWhere((m) => m.end == null);
         if (openIdx >= 0) meals[openIdx] = meals[openIdx].withEnd(timeStr);
-        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, meals: meals));
-        final lastMeal = openIdx >= 0 ? meals[openIdx] : null;
-        final durMsg = lastMeal?.durationFormatted != null
-            ? ' (${lastMeal!.durationFormatted})' : '';
-
-        if (_wasStudyingBeforeMeal) {
-          _isStudying = true;
-          _wasStudyingBeforeMeal = false;
-          await _notifyNativeResult(title: '식사 종료 → 공부 복귀',
-              body: '식사 종료 $timeStr$durMsg — 공부 모드로 복귀합니다');
-          _sendNfc('📚 공부 재개 $timeStr$durMsg');
-          _emitAction('meal_end_study_resume', '📚', '식사 종료$durMsg → 공부 복귀');
-        } else {
-          await _notifyNativeResult(title: '식사 종료', body: '식사 종료 $timeStr$durMsg');
-          _sendNfc('🍽 식사 종료 $timeStr$durMsg');
-          _emitAction('meal_end', '🍽️', '식사 종료 $timeStr$durMsg');
-        }
+        await fb.updateTimeRecord(dateStr, _withFields(dateStr, e, meals: meals))
+            .timeout(const Duration(seconds: 5));
+        final dur = openIdx >= 0 ? meals[openIdx].durationFormatted : null;
+        final durMsg = dur != null ? ' ($dur)' : '';
+        await _saveState();
+        _sendNfc('🍽 식사 종료 $tgTime$durMsg');
+        _notifyNative(title: '식사 종료', body: '식사 종료 $tgTime$durMsg');
+        _emitAction('meal_end', '🍽️', '식사 종료 $tgTime$durMsg');
       }
-      await _saveToggleState();
       _triggerWidgetUpdate();
     } catch (e) {
       _log('Meal 에러: $e');
-      await _notifyNativeResult(title: 'NFC 처리 실패', body: '식사 기록 실패');
     }
   }
 
-  // ── Utilities ──
+  // ═══ 수면 (sleep) + 일일 요약 ═══
+
+  Future<void> _handleSleep(String dateStr, String timeStr) async {
+    if (_state == DayState.idle || _state == DayState.sleeping) {
+      _emitAction('sleep_skip', '🛏️', '취침 불가 (${_state.name})');
+      return;
+    }
+    try {
+      final fb = FirebaseService();
+      final records = await fb.getTimeRecords().timeout(const Duration(seconds: 5));
+      final now = DateTime.now();
+
+      // UL-2: 4~7시 → 전날 bedTime 미기록이면 전날로 귀속
+      if (now.hour >= 4 && now.hour < 7) {
+        final yday = DateFormat('yyyy-MM-dd').format(now.subtract(const Duration(days: 1)));
+        if (records[yday]?.bedTime == null) dateStr = yday;
+      }
+
+      final e = records[dateStr];
+      final meals = List<MealEntry>.from(e?.meals ?? []);
+
+      // 열린 식사 닫기
+      if (_isMealing) {
+        _isMealing = false;
+        final oi = meals.lastIndexWhere((m) => m.end == null);
+        if (oi >= 0) meals[oi] = meals[oi].withEnd(timeStr);
+      }
+
+      // 공부 중이면 종료
+      String? studyEnd;
+      if (_state == DayState.studying && e?.study != null && e?.studyEnd == null) {
+        studyEnd = timeStr;
+      }
+
+      await fb.updateTimeRecord(dateStr,
+          _withFields(dateStr, e, studyEnd: studyEnd, bedTime: timeStr, meals: meals))
+          .timeout(const Duration(seconds: 5));
+
+      _state = DayState.sleeping;
+      await _saveState();
+      _cancelReminders();
+
+      final tgTime = DateFormat('HH:mm').format(now);
+      final summary = _buildSummary(e, studyEnd ?? e?.studyEnd, timeStr, meals);
+      _sendNfc('😴 취침 $tgTime\n$summary');
+      _notifyNative(title: '취침', body: '취침 $tgTime — 좋은 밤 되세요');
+      _emitAction('sleep', '🛏️', '취침 $tgTime');
+      _triggerWidgetUpdate();
+    } catch (e) {
+      _log('Sleep 에러: $e');
+    }
+  }
+
+  // ═══ 일일 요약 ═══
+
+  String _buildSummary(TimeRecord? e, String? studyEnd, String bed, List<MealEntry> meals) {
+    final lines = <String>[];
+    if (e?.wake != null) lines.add('⏱ 활동 ${_fmtMin(_timeDiffMin(e!.wake!, bed))}');
+    if (e?.study != null && studyEnd != null) {
+      final total = _timeDiffMin(e!.study!, studyEnd);
+      int mealMin = 0;
+      for (final m in meals) { if (m.durationMin != null) mealMin += m.durationMin!; }
+      final net = (total - mealMin).clamp(0, 1440);
+      if (net > 0) lines.add('📚 순공 ${_fmtMin(net)}');
+    }
+    final done = meals.where((m) => m.durationMin != null).toList();
+    if (done.isNotEmpty) {
+      final tm = done.fold<int>(0, (s, m) => s + m.durationMin!);
+      lines.add('🍽 식사 ${done.length}회 (${_fmtMin(tm)})');
+    }
+    if (e?.outing != null && e?.returnHome != null) {
+      final m = _timeDiffMin(e!.outing!, e!.returnHome!);
+      if (m > 0) lines.add('🚶 외출 ${_fmtMin(m)}');
+    }
+    if (lines.isEmpty) return '오늘 하루 수고하셨습니다 🌙';
+    return '── 일일 요약 ──\n${lines.join('\n')}';
+  }
+
+  // ═══ Utilities ═══
 
   void _triggerWidgetUpdate() {
     Future.delayed(const Duration(milliseconds: 500), () async {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('widget_needs_update', true);
-      } catch (_) {}
+      try { (await SharedPreferences.getInstance()).setBool('widget_needs_update', true); } catch (_) {}
     });
   }
 
-  void _sendNfc(String message) {
-    TelegramService().sendNfc(message);
-  }
+  void _sendNfc(String msg) { TelegramService().sendNfc(msg); }
 
-  Future<void> _notifyNativeResult({required String title, required String body}) async {
-    try {
-      await _nfcChannel.invokeMethod('showNotification', {
-        'title': title, 'body': body,
-      });
-      _log('알림 표시: $title — $body');
-    } catch (e) {
-      _log('알림 표시 실패: $e');
-    }
+  Future<void> _notifyNative({required String title, required String body}) async {
+    try { await _nfcChannel.invokeMethod('showNotification', {'title': title, 'body': body}); }
+    catch (_) {}
   }
 
   Future<void> _requestNotificationPermissionOnce() async {
     if (_notifPermissionRequested) return;
     _notifPermissionRequested = true;
-    try {
-      await _nfcChannel.invokeMethod('requestNotificationPermission');
-    } catch (e) {
-      _log('알림 권한 요청 실패: $e');
-    }
+    try { await _nfcChannel.invokeMethod('requestNotificationPermission'); } catch (_) {}
   }
 
-  /// 시간 문자열 차이 (분)
   int _timeDiffMin(String start, String end) {
-    final sParts = start.split(':');
-    final eParts = end.split(':');
-    final sMin = int.parse(sParts[0]) * 60 + int.parse(sParts[1]);
-    var eMin = int.parse(eParts[0]) * 60 + int.parse(eParts[1]);
-    if (eMin < sMin) eMin += 1440;
-    return eMin - sMin;
+    final sp = start.split(':'); final ep = end.split(':');
+    final s = int.parse(sp[0]) * 60 + int.parse(sp[1]);
+    var e = int.parse(ep[0]) * 60 + int.parse(ep[1]);
+    if (e < s) e += 1440;
+    return e - s;
   }
 
-  /// 분 → "Xh Xm" 또는 "Xm" 포맷
-  String _formatMin(int min) {
-    if (min >= 60) return '${min ~/ 60}h ${min % 60}m';
-    return '${min}m';
-  }
+  String _fmtMin(int m) => m >= 60 ? '${m ~/ 60}h ${m % 60}m' : '${m}m';
 
-  /// 순공시간 계산: (studyEnd - study) - 총 식사시간
-  int _calcNetStudyMin(TimeRecord tr, String endTime) {
+  int _calcNetStudy(TimeRecord tr, String end) {
     if (tr.study == null) return 0;
-    final totalMin = _timeDiffMin(tr.study!, endTime);
-    int mealMin = 0;
-    for (final m in tr.meals) {
-      if (m.durationMin != null) mealMin += m.durationMin!;
-    }
-    return (totalMin - mealMin).clamp(0, 1440);
+    final total = _timeDiffMin(tr.study!, end);
+    int meal = 0;
+    for (final m in tr.meals) { if (m.durationMin != null) meal += m.durationMin!; }
+    return (total - meal).clamp(0, 1440);
   }
 
-  /// study 역할 태그의 placeName 조회
-  String? _findTagPlaceName(NfcTagRole role) {
-    for (final t in _tags) {
-      if (t.role == role && t.placeName != null) return t.placeName;
-    }
+  String? _findTagPlace(NfcTagRole role) {
+    for (final t in _tags) { if (t.role == role && t.placeName != null) return t.placeName; }
     return null;
   }
 }

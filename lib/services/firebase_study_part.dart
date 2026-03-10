@@ -22,7 +22,7 @@ extension FirebaseStudyOps on FirebaseService {
     _studyCache ??= {};
     (_studyCache!.putIfAbsent(_timeRecordsField, () => {}) as Map)[date] = recordMap;
     _studyCacheTime = DateTime.now();
-    LocalCacheService().updateStudyField('$_timeRecordsField.$date', recordMap);
+    await LocalCacheService().updateStudyField('$_timeRecordsField.$date', recordMap);
     _db.doc(_studyDoc).update({
       '$_timeRecordsField.$date': recordMap,
       'lastModified': DateTime.now().millisecondsSinceEpoch,
@@ -38,7 +38,7 @@ extension FirebaseStudyOps on FirebaseService {
       }, SetOptions(merge: true)).catchError((_) {});
     });
     if (date == StudyDateUtils.todayKey()) {
-      updateTodayField('timeRecords', recordMap);
+      await updateTodayField('timeRecords', recordMap);
     }
   }
 

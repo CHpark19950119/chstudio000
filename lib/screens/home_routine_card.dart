@@ -15,29 +15,29 @@ extension _HomeRoutineCard on _HomeScreenState {
     final bool hasReturned = _outing != null && _returnHome != null;
     final hasBed = _bedTime != null;
 
-    // 현재 상태 판별
+    // ★ v10: DayState FSM 기반 상태 판별 (우선) + TimeRecord fallback
+    final ds = _nfc.state;
     String currentPhase;
     Color phaseColor;
     IconData phaseIcon;
     if (_ft.isRunning) {
       currentPhase = '학습 중'; phaseColor = BotanicalColors.primary;
       phaseIcon = Icons.auto_stories_rounded;
-    } else if (isCurrentlyOut) {
+    } else if (ds == DayState.outing || isCurrentlyOut) {
       currentPhase = '외출 중'; phaseColor = const Color(0xFF3B8A6B);
       phaseIcon = Icons.directions_walk_rounded;
-    } else if (hasBed && _studyEnd != null && hasReturned) {
-      // 취침: 공부종료 + 귀가완료 + 취침태그 모두 있어야 표시
+    } else if (ds == DayState.sleeping || (hasBed && _studyEnd != null)) {
       currentPhase = '취침'; phaseColor = const Color(0xFF6B5DAF);
       phaseIcon = Icons.bedtime_rounded;
-    } else if (hasReturned) {
-      currentPhase = '귀가 완료'; phaseColor = const Color(0xFF5B7ABF);
-      phaseIcon = Icons.home_rounded;
-    } else if (_studyEnd != null) {
-      currentPhase = '공부 종료'; phaseColor = const Color(0xFF5B7ABF);
-      phaseIcon = Icons.check_circle_rounded;
-    } else if (hasStudy) {
-      currentPhase = '대기'; phaseColor = _accent; phaseIcon = Icons.schedule_rounded;
-    } else if (hasWake) {
+    } else if (ds == DayState.returned || hasReturned || _studyEnd != null) {
+      currentPhase = hasReturned ? '귀가 완료' : '공부 종료';
+      phaseColor = const Color(0xFF5B7ABF);
+      phaseIcon = hasReturned ? Icons.home_rounded : Icons.check_circle_rounded;
+    } else if (ds == DayState.studying || hasStudy) {
+      currentPhase = _nfc.isMealing ? '식사 중' : '대기';
+      phaseColor = _nfc.isMealing ? const Color(0xFFFF8A65) : _accent;
+      phaseIcon = _nfc.isMealing ? Icons.restaurant_rounded : Icons.schedule_rounded;
+    } else if (ds == DayState.awake || hasWake) {
       currentPhase = _noOuting ? '재택 중' : '준비 중';
       phaseColor = _noOuting ? const Color(0xFF5B7ABF) : const Color(0xFFF59E0B);
       phaseIcon = _noOuting ? Icons.home_rounded : Icons.wb_sunny_rounded;
@@ -45,7 +45,7 @@ extension _HomeRoutineCard on _HomeScreenState {
       currentPhase = '시작 전'; phaseColor = _textMuted; phaseIcon = Icons.wb_twilight_rounded;
     }
 
-    final isLive = _ft.isRunning || isCurrentlyOut;
+    final isLive = _ft.isRunning || isCurrentlyOut || ds == DayState.outing;
 
     // 메쉬 그라디언트 색상 세트
     final meshColors = _dk

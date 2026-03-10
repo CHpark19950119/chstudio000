@@ -5,6 +5,14 @@ part of 'home_screen.dart';
 /// ═══════════════════════════════════════════════════
 extension _HomeFocusSection on _HomeScreenState {
 
+  void _pushFocusScreen() {
+    if (_focusScreenOpen) return;
+    _focusScreenOpen = true;
+    Navigator.push(context,
+      MaterialPageRoute(builder: (_) => const FocusScreen()))
+      .then((_) { _focusScreenOpen = false; _load(); _loadFocusRecords(); });
+  }
+
   Future<void> _loadFocusRecords() async {
     _safeSetState(() => _focusRecordsLoading = true);
     try {
@@ -21,6 +29,10 @@ extension _HomeFocusSection on _HomeScreenState {
   }
 
   Widget _focusPage() {
+    // Auto-start cradle when focus tab is shown (so it's ready when session starts)
+    if (_cradle.isCalibrated && !_cradle.isEnabled) {
+      _cradle.start();
+    }
     final isRunning = _ft.isRunning;
     final dk = _dk;
     _focusSessions = _ft.todaySessions;
@@ -29,62 +41,20 @@ extension _HomeFocusSection on _HomeScreenState {
     final pct = (_ft.todayStudyMinutes / goalMin).clamp(0.0, 1.0);
     final totalEff = _focusSessions.fold<int>(0, (s, c) => s + c.effectiveMin);
 
-    // If running, show compact running view
+    // If running → auto-enter FocusScreen immersive (no intermediate card)
     if (isRunning) {
-      final st = _ft.getCurrentState();
-      final mc = BotanicalColors.subjectColor(st.subject);
-      return ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        children: [
-          const SizedBox(height: 20),
-          // running status
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: mc.withOpacity(dk ? 0.06 : 0.03),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: mc.withOpacity(0.15))),
-            child: Column(children: [
-              Row(children: [
-                Container(width: 8, height: 8, decoration: BoxDecoration(
-                  shape: BoxShape.circle, color: mc,
-                  boxShadow: [BoxShadow(color: mc.withOpacity(0.5), blurRadius: 8)])),
-                const SizedBox(width: 10),
-                Text('${st.mode == 'study' ? '📖 집중' : st.mode == 'lecture' ? '🎧 강의' : '☕ 휴식'} · ${st.subject}',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: mc)),
-              ]),
-              const SizedBox(height: 16),
-              Text(st.mainTimerFormatted, style: TextStyle(
-                fontSize: 48, fontWeight: FontWeight.w200, color: mc,
-                fontFamily: 'monospace', fontFeatures: const [FontFeature.tabularFigures()])),
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                decoration: BoxDecoration(
-                  color: mc.withOpacity(dk ? 0.12 : 0.06),
-                  borderRadius: BorderRadius.circular(10)),
-                child: Text('순공 ${st.effectiveTimeFormatted}', style: TextStyle(
-                  fontSize: 12, fontWeight: FontWeight.w800, color: mc)),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(width: double.infinity, height: 48,
-                child: ElevatedButton(
-                  onPressed: () => Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const FocusScreen()))
-                    .then((_) { _load(); _loadFocusRecords(); }),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: mc,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                    elevation: 0),
-                  child: const Text('포커스존 열기', style: TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w700)),
-                )),
-            ]),
-          ),
-          const SizedBox(height: 40),
-        ],
-      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _ft.isRunning) _pushFocusScreen();
+      });
+      // Minimal placeholder while transition happens
+      final mc = BotanicalColors.subjectColor(_ft.getCurrentState().subject);
+      return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        SizedBox(width: 32, height: 32, child: CircularProgressIndicator(
+          strokeWidth: 2, color: mc)),
+        const SizedBox(height: 12),
+        Text('포커스 진입 중...', style: TextStyle(
+          fontSize: 13, color: _textMuted)),
+      ]));
     }
 
     // Setup view (not running)
@@ -216,8 +186,39 @@ extension _HomeFocusSection on _HomeScreenState {
           _fCradleCard(),
           const SizedBox(height: 28),
 
-          // ── Start button ──
-          _fStartButton(sc),
+          // ── Start → 바로 이머시브 진입 ──
+          GestureDetector(
+            onTap: () async {
+              // 세션 시작 후 바로 FocusScreen 이머시브로 진입
+              await _ft.startSession(subject: _focusSubj, mode: _focusMode);
+              if (mounted) _pushFocusScreen();
+            },
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(22),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [sc.withOpacity(dk ? 0.18 : 0.12), sc.withOpacity(dk ? 0.08 : 0.04)],
+                      begin: Alignment.topLeft, end: Alignment.bottomRight),
+                    borderRadius: BorderRadius.circular(22),
+                    border: Border.all(color: sc.withOpacity(0.25)),
+                    boxShadow: [BoxShadow(color: sc.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 8))]),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Container(width: 34, height: 34,
+                      decoration: BoxDecoration(shape: BoxShape.circle, color: sc.withOpacity(0.22),
+                        boxShadow: [BoxShadow(color: sc.withOpacity(0.15), blurRadius: 12)]),
+                      child: Icon(Icons.play_arrow_rounded, size: 22, color: sc)),
+                    const SizedBox(width: 10),
+                    Text('시작', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: sc, letterSpacing: 0.5)),
+                  ]),
+                ),
+              ),
+            ),
+          ),
           const SizedBox(height: 36),
 
           // ── Records divider ──
@@ -400,8 +401,19 @@ extension _HomeFocusSection on _HomeScreenState {
           Text(on ? '✅' : '📐', style: const TextStyle(fontSize: 20)),
           const SizedBox(width: 10),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('거치대 등록됨', style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w700, color: _textMain)),
+            Row(children: [
+              Text('거치대 등록됨', style: TextStyle(
+                fontSize: 13, fontWeight: FontWeight.w700, color: _textMain)),
+              if (_cradle.isChargingCalibrated) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(5)),
+                  child: const Text('🔌', style: TextStyle(fontSize: 10))),
+              ],
+            ]),
             const SizedBox(height: 2),
             Row(children: [
               Container(width: 6, height: 6, decoration: BoxDecoration(
@@ -603,6 +615,7 @@ extension _HomeFocusSection on _HomeScreenState {
     final dk = _dk;
     bool calibrating = false;
     bool done = false;
+    String calType = 'normal';
     showModalBottomSheet(context: context, isScrollControlled: true,
       backgroundColor: dk ? BotanicalColors.cardDark : BotanicalColors.cardLight,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
@@ -617,12 +630,55 @@ extension _HomeFocusSection on _HomeScreenState {
             Text('거치대 각도 캘리브레이션', style: BotanicalTypo.heading(size: 17, color: _textMain)),
             const SizedBox(height: 6),
             Text('거치대에 올려놓고 시작 — 이 각도에서만 활성화됩니다', style: TextStyle(fontSize: 12, color: _textMuted)),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
+            // ── 모드 선택: 일반 / 충전 ──
+            if (!calibrating && !done) ...[
+              Row(children: [
+                Expanded(child: GestureDetector(
+                  onTap: () => setBS(() => calType = 'normal'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: calType == 'normal' ? BotanicalColors.primary.withOpacity(0.12) : _textMuted.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: calType == 'normal' ? BotanicalColors.primary.withOpacity(0.35) : Colors.transparent)),
+                    child: Column(children: [
+                      const Text('📐', style: TextStyle(fontSize: 22)),
+                      const SizedBox(height: 4),
+                      Text('일반', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                        color: calType == 'normal' ? BotanicalColors.primary : _textMuted)),
+                      Text(_cradle.isCalibrated ? '등록됨' : '미등록', style: TextStyle(fontSize: 9,
+                        color: _cradle.isCalibrated ? const Color(0xFF10B981) : _textMuted.withOpacity(0.5))),
+                    ]),
+                  ),
+                )),
+                const SizedBox(width: 10),
+                Expanded(child: GestureDetector(
+                  onTap: () => setBS(() => calType = 'charging'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: calType == 'charging' ? Colors.orange.withOpacity(0.12) : _textMuted.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: calType == 'charging' ? Colors.orange.withOpacity(0.35) : Colors.transparent)),
+                    child: Column(children: [
+                      const Text('🔌', style: TextStyle(fontSize: 22)),
+                      const SizedBox(height: 4),
+                      Text('충전용', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                        color: calType == 'charging' ? Colors.orange : _textMuted)),
+                      Text(_cradle.isChargingCalibrated ? '등록됨' : '미등록', style: TextStyle(fontSize: 9,
+                        color: _cradle.isChargingCalibrated ? const Color(0xFF10B981) : _textMuted.withOpacity(0.5))),
+                    ]),
+                  ),
+                )),
+              ]),
+              const SizedBox(height: 16),
+            ],
             if (done) ...[
               const Text('✅', style: TextStyle(fontSize: 44)),
               const SizedBox(height: 10),
-              const Text('등록 완료!', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700,
-                color: Color(0xFF10B981))),
+              Text(calType == 'charging' ? '충전용 등록 완료!' : '등록 완료!',
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFF10B981))),
               const SizedBox(height: 6),
               Text('기준 각도가 저장되었습니다', style: TextStyle(fontSize: 12, color: _textMuted)),
               const SizedBox(height: 16),
@@ -639,22 +695,32 @@ extension _HomeFocusSection on _HomeScreenState {
               Text('측정 중... 폰을 움직이지 마세요', style: TextStyle(
                 fontSize: 13, fontWeight: FontWeight.w600, color: _textMain)),
               const SizedBox(height: 6),
-              Text('5초간 가속도계 데이터를 수집합니다', style: TextStyle(fontSize: 11, color: _textMuted)),
+              Text(calType == 'charging' ? '충전 상태 각도를 측정합니다 (5초)' : '5초간 가속도계 데이터를 수집합니다',
+                style: TextStyle(fontSize: 11, color: _textMuted)),
               const SizedBox(height: 24),
             ] else ...[
-              Icon(Icons.phone_android_rounded, size: 48, color: _textMuted.withOpacity(0.5)),
+              Icon(calType == 'charging' ? Icons.battery_charging_full_rounded : Icons.phone_android_rounded,
+                size: 48, color: _textMuted.withOpacity(0.5)),
               const SizedBox(height: 12),
-              Text('폰을 거치대에 올려놓고\n아래 버튼을 누르세요', textAlign: TextAlign.center,
+              Text(calType == 'charging'
+                ? '충전 케이블을 꽂은 상태로\n거치대에 올려놓고 아래 버튼을 누르세요'
+                : '폰을 거치대에 올려놓고\n아래 버튼을 누르세요',
+                textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 13, color: _textSub, height: 1.5)),
               const SizedBox(height: 20),
               SizedBox(width: double.infinity, height: 46, child: ElevatedButton(
                 onPressed: () async {
                   setBS(() => calibrating = true);
-                  await _cradle.calibrate();
+                  if (calType == 'charging') {
+                    await _cradle.calibrateCharging();
+                  } else {
+                    await _cradle.calibrate();
+                  }
                   await _cradle.setEnabled(true);
                   setBS(() { calibrating = false; done = true; });
                 },
-                style: ElevatedButton.styleFrom(backgroundColor: BotanicalColors.primary,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: calType == 'charging' ? Colors.orange : BotanicalColors.primary,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
                 child: const Text('측정 시작', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)))),

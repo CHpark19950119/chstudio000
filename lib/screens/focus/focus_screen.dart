@@ -107,11 +107,28 @@ class _FocusScreenState extends State<FocusScreen>
   void _exitImmersive() =>
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
+  static const _focusCh = MethodChannel('com.cheonhong.cheonhong_studio/focus_mode');
+
   void _minimizeToHome() {
     _exitImmersive();
-    const MethodChannel('com.cheonhong.cheonhong_studio/focus_mode')
-        .invokeMethod('moveTaskToBack')
+    _focusCh.invokeMethod('moveTaskToBack')
         .catchError((_) => SystemNavigator.pop(animated: true));
+  }
+
+  void _lockScreen() {
+    _exitImmersive();
+    _focusCh.invokeMethod('lockScreen').then((ok) {
+      if (ok != true) {
+        // Device admin not enabled — show hint
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('기기 관리자 권한을 허용하세요'), duration: Duration(seconds: 3)));
+        }
+      }
+    }).catchError((_) {
+      // Fallback: just minimize
+      _focusCh.invokeMethod('moveTaskToBack').catchError((_) {});
+    });
   }
 
   Future<void> _loadRecords() async {
@@ -502,7 +519,6 @@ class _FocusScreenState extends State<FocusScreen>
     }
 
     // Calibrated
-    final refAngle = sqrt(_cradle.lastAngle * _cradle.lastAngle).toStringAsFixed(0);
     final statusColor = on ? const Color(0xFF10B981) : (en ? _t3.withOpacity(0.6) : _t3.withOpacity(0.4));
     final statusMsg = on ? '거치 감지됨' : (en ? '대기 중' : '감지 OFF');
 
@@ -516,8 +532,19 @@ class _FocusScreenState extends State<FocusScreen>
           Text(on ? '✅' : '📐', style: const TextStyle(fontSize: 20)),
           const SizedBox(width: 10),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('거치대 등록됨', style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w700, color: _t1)),
+            Row(children: [
+              Text('거치대 등록됨', style: TextStyle(
+                fontSize: 13, fontWeight: FontWeight.w700, color: _t1)),
+              if (_cradle.isChargingCalibrated) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(5)),
+                  child: const Text('🔌', style: TextStyle(fontSize: 10))),
+              ],
+            ]),
             const SizedBox(height: 2),
             Row(children: [
               Container(width: 6, height: 6, decoration: BoxDecoration(
@@ -951,6 +978,8 @@ class _FocusScreenState extends State<FocusScreen>
                 const SizedBox(width: 6),
                 _imBathroomBtn(),
                 const SizedBox(width: 6),
+                _imActionBtn(Icons.lock_rounded, const Color(0xFF8B5CF6), _lockScreen),
+                const SizedBox(width: 6),
                 _imActionBtn(Icons.home_rounded, Colors.blueAccent, _minimizeToHome),
                 const SizedBox(width: 6),
                 _imActionBtn(Icons.stop_rounded, Colors.redAccent, _confirmEnd, size: 24),
@@ -1313,6 +1342,7 @@ class _FocusScreenState extends State<FocusScreen>
   void _showCradleCalibration() {
     bool calibrating = false;
     bool done = false;
+    String calType = 'normal'; // 'normal' or 'charging'
     showModalBottomSheet(context: context, isScrollControlled: true,
       backgroundColor: _dk ? BotanicalColors.cardDark : BotanicalColors.cardLight,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
@@ -1327,12 +1357,55 @@ class _FocusScreenState extends State<FocusScreen>
             Text('거치대 각도 캘리브레이션', style: BotanicalTypo.heading(size: 17, color: _t1)),
             const SizedBox(height: 6),
             Text('거치대에 올려놓고 시작 — 이 각도에서만 활성화됩니다', style: TextStyle(fontSize: 12, color: _t3)),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
+            // ── 모드 선택: 일반 / 충전 ──
+            if (!calibrating && !done) ...[
+              Row(children: [
+                Expanded(child: GestureDetector(
+                  onTap: () => setBS(() => calType = 'normal'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: calType == 'normal' ? BotanicalColors.primary.withOpacity(0.12) : _t3.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: calType == 'normal' ? BotanicalColors.primary.withOpacity(0.35) : Colors.transparent)),
+                    child: Column(children: [
+                      Text('📐', style: const TextStyle(fontSize: 22)),
+                      const SizedBox(height: 4),
+                      Text('일반', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                        color: calType == 'normal' ? BotanicalColors.primary : _t3)),
+                      Text(_cradle.isCalibrated ? '등록됨' : '미등록', style: TextStyle(fontSize: 9,
+                        color: _cradle.isCalibrated ? const Color(0xFF10B981) : _t3.withOpacity(0.5))),
+                    ]),
+                  ),
+                )),
+                const SizedBox(width: 10),
+                Expanded(child: GestureDetector(
+                  onTap: () => setBS(() => calType = 'charging'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: calType == 'charging' ? Colors.orange.withOpacity(0.12) : _t3.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: calType == 'charging' ? Colors.orange.withOpacity(0.35) : Colors.transparent)),
+                    child: Column(children: [
+                      const Text('🔌', style: TextStyle(fontSize: 22)),
+                      const SizedBox(height: 4),
+                      Text('충전용', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                        color: calType == 'charging' ? Colors.orange : _t3)),
+                      Text(_cradle.isChargingCalibrated ? '등록됨' : '미등록', style: TextStyle(fontSize: 9,
+                        color: _cradle.isChargingCalibrated ? const Color(0xFF10B981) : _t3.withOpacity(0.5))),
+                    ]),
+                  ),
+                )),
+              ]),
+              const SizedBox(height: 16),
+            ],
             if (done) ...[
               const Text('✅', style: TextStyle(fontSize: 44)),
               const SizedBox(height: 10),
-              Text('등록 완료!', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700,
-                color: const Color(0xFF10B981))),
+              Text(calType == 'charging' ? '충전용 등록 완료!' : '등록 완료!',
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Color(0xFF10B981))),
               const SizedBox(height: 6),
               Text('기준 각도가 저장되었습니다', style: TextStyle(fontSize: 12, color: _t3)),
               const SizedBox(height: 16),
@@ -1349,22 +1422,32 @@ class _FocusScreenState extends State<FocusScreen>
               Text('측정 중... 폰을 움직이지 마세요', style: TextStyle(
                 fontSize: 13, fontWeight: FontWeight.w600, color: _t1)),
               const SizedBox(height: 6),
-              Text('5초간 가속도계 데이터를 수집합니다', style: TextStyle(fontSize: 11, color: _t3)),
+              Text(calType == 'charging' ? '충전 상태 각도를 측정합니다 (5초)' : '5초간 가속도계 데이터를 수집합니다',
+                style: TextStyle(fontSize: 11, color: _t3)),
               const SizedBox(height: 24),
             ] else ...[
-              Icon(Icons.phone_android_rounded, size: 48, color: _t3.withOpacity(0.5)),
+              Icon(calType == 'charging' ? Icons.battery_charging_full_rounded : Icons.phone_android_rounded,
+                size: 48, color: _t3.withOpacity(0.5)),
               const SizedBox(height: 12),
-              Text('폰을 거치대에 올려놓고\n아래 버튼을 누르세요', textAlign: TextAlign.center,
+              Text(calType == 'charging'
+                ? '충전 케이블을 꽂은 상태로\n거치대에 올려놓고 아래 버튼을 누르세요'
+                : '폰을 거치대에 올려놓고\n아래 버튼을 누르세요',
+                textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 13, color: _t2, height: 1.5)),
               const SizedBox(height: 20),
               SizedBox(width: double.infinity, height: 46, child: ElevatedButton(
                 onPressed: () async {
                   setBS(() => calibrating = true);
-                  await _cradle.calibrate();
+                  if (calType == 'charging') {
+                    await _cradle.calibrateCharging();
+                  } else {
+                    await _cradle.calibrate();
+                  }
                   await _cradle.setEnabled(true);
                   setBS(() { calibrating = false; done = true; });
                 },
-                style: ElevatedButton.styleFrom(backgroundColor: BotanicalColors.primary,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: calType == 'charging' ? Colors.orange : BotanicalColors.primary,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
                 child: const Text('측정 시작', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)))),

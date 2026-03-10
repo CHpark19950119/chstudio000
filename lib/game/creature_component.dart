@@ -3,10 +3,11 @@ import 'dart:ui';
 import 'package:flutter/material.dart' show CustomPainter, Size;
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
+import 'package:flame/sprite.dart';  // SpriteSheet, SpriteAnimation
 import 'pixel_palette.dart';
 
 // ═══════════════════════════════════════════
-//  Pixel creature — 5 evolution stages
+//  3D Voxel creature — sprite sheet animation
 // ═══════════════════════════════════════════
 
 class CreatureComponent extends PositionComponent with HasGameRef, TapCallbacks {
@@ -15,75 +16,101 @@ class CreatureComponent extends PositionComponent with HasGameRef, TapCallbacks 
   double _baseY = 0;
   double _timer = 0;
   double _stateTimer = 0;
-  double _blinkTimer = 0;
   double _walkDir = 1;
-  int _frame = 0;
   _CState _state = _CState.idle;
   final _rng = math.Random();
   final List<_PxParticle> _particles = [];
+
+  SpriteAnimationComponent? _animComp;
 
   CreatureComponent({required this.stage, required this.mood});
 
   @override
   Future<void> onLoad() async {
-    final s = _sizeForStage();
-    size = Vector2(s * pxScale, s * pxScale);
+    // prefix = 'assets/habitat/' → '../image/' resolves to 'assets/image/'
+    final image = await gameRef.images.load('../image/creature_3d_sheet_128.png');
+
+    final sheet = SpriteSheet(image: image, srcSize: Vector2(128, 128));
+
+    // Build 36-frame animation (6×6 grid, 10fps)
+    final frames = <SpriteAnimationFrame>[];
+    for (int row = 0; row < 6; row++) {
+      for (int col = 0; col < 6; col++) {
+        frames.add(SpriteAnimationFrame(sheet.getSprite(row, col), 0.1));
+      }
+    }
+    final anim = SpriteAnimation(frames);
+
+    final scale = _scaleForStage();
+    final sz = 128.0 * scale;
+    size = Vector2(sz, sz);
+
+    _animComp = SpriteAnimationComponent(
+      animation: anim,
+      size: Vector2(sz, sz),
+    );
+    add(_animComp!);
+
     _baseY = position.y;
   }
 
-  double _sizeForStage() => [12, 16, 16, 20, 24][stage.clamp(0, 4)].toDouble();
+  double _scaleForStage() {
+    switch (stage.clamp(0, 4)) {
+      case 0: return 0.5;
+      case 1: return 0.65;
+      case 2: return 0.8;
+      case 3: return 1.0;
+      case 4: return 1.2;
+      default: return 0.5;
+    }
+  }
 
   @override
   void update(double dt) {
     super.update(dt);
     _timer += dt;
     _stateTimer += dt;
-    _blinkTimer += dt;
 
-    // blink every 3s
-    if (_blinkTimer > 3.0) _blinkTimer = 0;
-
-    // frame cycling
-    _frame = (_timer * 3).toInt() % 2;
-
-    // state machine
     switch (_state) {
       case _CState.idle:
-        position.y = _baseY + math.sin(_timer * 1.5) * 2 * pxScale;
+        position.y = _baseY + math.sin(_timer * 1.5) * 3;
         if (_stateTimer > 3 + _rng.nextDouble() * 3) {
           _state = _CState.walk;
           _stateTimer = 0;
           _walkDir = _rng.nextBool() ? 1 : -1;
+          _updateFlip();
         }
         if (_stateTimer > 2 && _rng.nextDouble() < 0.003) {
           _state = _CState.jump;
           _stateTimer = 0;
         }
         final h = DateTime.now().hour;
-        if (h >= 22 || h < 4) _state = _CState.sleep;
+        if (h >= 22 || h < 4) {
+          _state = _CState.sleep;
+          _animComp?.animation?.stepTime = 0.3; // slow
+        }
         break;
       case _CState.walk:
         position.x += _walkDir * 20 * dt;
-        position.y = _baseY + math.sin(_timer * 4) * 1 * pxScale;
+        position.y = _baseY + math.sin(_timer * 4) * 1.5;
         final gw = gameRef.size.x;
-        if (position.x < gw * 0.15) _walkDir = 1;
-        if (position.x > gw * 0.75) _walkDir = -1;
+        if (position.x < gw * 0.15) { _walkDir = 1; _updateFlip(); }
+        if (position.x > gw * 0.75) { _walkDir = -1; _updateFlip(); }
         if (_stateTimer > 2 + _rng.nextDouble() * 2) {
           _state = _CState.idle;
           _stateTimer = 0;
         }
         break;
       case _CState.jump:
-        final t = _stateTimer;
-        position.y = _baseY - math.sin(t * 4) * 8 * pxScale;
-        if (t > 0.8) {
+        position.y = _baseY - math.sin(_stateTimer * 4) * 12;
+        if (_stateTimer > 0.8) {
           _state = _CState.idle;
           _stateTimer = 0;
           position.y = _baseY;
         }
         break;
       case _CState.happy:
-        position.y = _baseY - math.sin(_stateTimer * 8) * 6 * pxScale;
+        position.y = _baseY - math.sin(_stateTimer * 8) * 8;
         if (_stateTimer > 2.0) {
           _state = _CState.idle;
           _stateTimer = 0;
@@ -92,11 +119,14 @@ class CreatureComponent extends PositionComponent with HasGameRef, TapCallbacks 
       case _CState.sleep:
         position.y = _baseY;
         final h = DateTime.now().hour;
-        if (h >= 4 && h < 22) _state = _CState.idle;
+        if (h >= 4 && h < 22) {
+          _state = _CState.idle;
+          _animComp?.animation?.stepTime = 0.1; // normal
+        }
         break;
     }
 
-    // particles
+    // Particles
     _particles.removeWhere((p) => p.life <= 0);
     for (final p in _particles) {
       p.x += p.vx * dt;
@@ -106,11 +136,21 @@ class CreatureComponent extends PositionComponent with HasGameRef, TapCallbacks 
     }
   }
 
+  void _updateFlip() {
+    final comp = _animComp;
+    if (comp == null) return;
+    if (_walkDir < 0 && !comp.isFlippedHorizontally) {
+      comp.flipHorizontally();
+    } else if (_walkDir > 0 && comp.isFlippedHorizontally) {
+      comp.flipHorizontally();
+    }
+  }
+
   @override
   void onTapDown(TapDownEvent event) {
     _state = _CState.jump;
     _stateTimer = 0;
-    _spawnParticles(30, 3); // hearts
+    _spawnParticles(30, 3);
   }
 
   void triggerHappy() {
@@ -122,10 +162,10 @@ class CreatureComponent extends PositionComponent with HasGameRef, TapCallbacks 
   void _spawnParticles(int colorIdx, int count) {
     for (int i = 0; i < count; i++) {
       _particles.add(_PxParticle(
-        x: size.x / 2 / pxScale,
-        y: size.y / 4 / pxScale,
-        vx: (_rng.nextDouble() - 0.5) * 15,
-        vy: -8 - _rng.nextDouble() * 10,
+        x: size.x / 2,
+        y: size.y / 4,
+        vx: (_rng.nextDouble() - 0.5) * 30,
+        vy: -15 - _rng.nextDouble() * 20,
         colorIdx: [18, 30, 22, 25, 19][_rng.nextInt(5)],
         life: 0.8 + _rng.nextDouble() * 0.6,
       ));
@@ -134,68 +174,36 @@ class CreatureComponent extends PositionComponent with HasGameRef, TapCallbacks 
 
   @override
   void render(Canvas canvas) {
-    final blink = _blinkTimer < 0.15;
-    final flip = _walkDir < 0;
-    final walking = _state == _CState.walk;
-    final sleeping = _state == _CState.sleep;
-
-    List<List<int>> sprite;
-    switch (stage) {
-      case 0: sprite = (_frame == 0) ? _eggF1 : _eggF2; break;
-      case 1: sprite = blink ? _babyBlink : (walking && _frame == 1 ? _babyWalk : _babyIdle); break;
-      case 2: sprite = blink ? _juniorBlink : (walking && _frame == 1 ? _juniorWalk : _juniorIdle); break;
-      case 3: sprite = blink ? _masterBlink : (walking && _frame == 1 ? _masterWalk : _masterIdle); break;
-      case 4: sprite = blink ? _legendBlink : (walking && _frame == 1 ? _legendWalk : _legendIdle); break;
-      default: sprite = _eggF1;
+    // Particles
+    for (final p in _particles) {
+      final color = masterPalette[p.colorIdx];
+      if (color == null) continue;
+      canvas.drawCircle(
+        Offset(p.x, p.y), 2,
+        Paint()..color = color.withOpacity(p.life.clamp(0, 1)),
+      );
     }
-
-    if (sleeping && stage > 0) {
-      sprite = _applySleep(sprite);
-    }
-
-    _renderSprite(canvas, sprite, flip);
 
     // zzZ for sleep
-    if (sleeping && stage > 0) {
-      final zOff = math.sin(_timer * 2) * 2;
-      fillRect(canvas, size.x / pxScale - 2, -2 + zOff, 1, 1, 25, alpha: 0.5);
-      fillRect(canvas, size.x / pxScale, -4 + zOff, 1, 1, 25, alpha: 0.3);
+    if (_state == _CState.sleep) {
+      final zOff = math.sin(_timer * 2) * 4;
+      final zP = Paint()..color = const Color(0x80FFFFFF);
+      canvas.drawCircle(Offset(size.x - 8, -4 + zOff), 2, zP);
+      canvas.drawCircle(Offset(size.x - 2, -10 + zOff), 1.5,
+          Paint()..color = const Color(0x50FFFFFF));
     }
 
-    // legend aura
-    if (stage == 4 && ((_timer * 2).toInt() % 2 == 0)) {
-      final s = sprite.length.toDouble();
-      strokeRect(canvas, -1, -1, s + 2, s + 2, 18);
+    // LEGEND aura glow
+    if (stage == 4) {
+      final glowA = 0.15 + 0.10 * math.sin(_timer * 2);
+      canvas.drawCircle(
+        Offset(size.x / 2, size.y / 2),
+        size.x * 0.6,
+        Paint()
+          ..color = Color.fromARGB((glowA * 255).round(), 255, 215, 0)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 20),
+      );
     }
-
-    // particles
-    for (final p in _particles) {
-      fillRect(canvas, p.x, p.y, 1, 1, p.colorIdx, alpha: p.life.clamp(0, 1));
-    }
-  }
-
-  void _renderSprite(Canvas canvas, List<List<int>> sprite, bool flip) {
-    for (int row = 0; row < sprite.length; row++) {
-      final line = sprite[row];
-      for (int col = 0; col < line.length; col++) {
-        final idx = line[flip ? (line.length - 1 - col) : col];
-        if (idx == 0) continue;
-        final color = masterPalette[idx];
-        if (color == null) continue;
-        canvas.drawRect(
-          Rect.fromLTWH(col * pxScale, row * pxScale, pxScale, pxScale),
-          Paint()..color = color,
-        );
-      }
-    }
-  }
-
-  List<List<int>> _applySleep(List<List<int>> src) {
-    // replace eyes (white+dark) with closed line
-    return src.map((row) => row.map((c) {
-      if (c == 25) return 29; // white eye → line
-      return c;
-    }).toList()).toList();
   }
 }
 
@@ -204,326 +212,47 @@ enum _CState { idle, walk, jump, happy, sleep }
 class _PxParticle {
   double x, y, vx, vy, life;
   int colorIdx;
-  _PxParticle({required this.x, required this.y, required this.vx, required this.vy, required this.colorIdx, required this.life});
+  _PxParticle({required this.x, required this.y, required this.vx,
+    required this.vy, required this.colorIdx, required this.life});
 }
 
-// ═══════════════ SPRITE DATA ═══════════════
-
-// EGG 12x12, palette: 3=cream dark outline, 2=cream fill, 1=cream light spots
-const _eggF1 = [
-  [0,0,0,0,3,3,3,3,0,0,0,0],
-  [0,0,0,3,2,2,2,2,3,0,0,0],
-  [0,0,3,2,2,1,2,2,2,3,0,0],
-  [0,3,2,2,2,2,2,1,2,2,3,0],
-  [0,3,2,1,2,2,2,2,2,2,3,0],
-  [3,2,2,2,2,2,2,2,1,2,2,3],
-  [3,2,2,2,1,2,2,2,2,2,2,3],
-  [3,2,2,2,2,2,1,2,2,2,2,3],
-  [0,3,2,2,2,2,2,2,2,2,3,0],
-  [0,3,2,2,1,2,2,2,1,2,3,0],
-  [0,0,3,2,2,2,2,2,2,3,0,0],
-  [0,0,0,3,3,3,3,3,3,0,0,0],
-];
-const _eggF2 = [ // wobble right
-  [0,0,0,0,0,3,3,3,3,0,0,0],
-  [0,0,0,0,3,2,2,2,2,3,0,0],
-  [0,0,0,3,2,2,1,2,2,2,3,0],
-  [0,0,3,2,2,2,2,2,1,2,2,3],
-  [0,0,3,2,1,2,2,2,2,2,2,3],
-  [0,3,2,2,2,2,2,2,2,1,2,3],
-  [0,3,2,2,2,1,2,2,2,2,2,3],
-  [0,3,2,2,2,2,2,1,2,2,2,3],
-  [0,0,3,2,2,2,2,2,2,2,3,0],
-  [0,0,3,2,2,1,2,2,2,2,3,0],
-  [0,0,0,3,2,2,2,2,2,3,0,0],
-  [0,0,0,0,3,3,3,3,3,0,0,0],
-];
-
-// BABY 16x16
-const _babyIdle = [
-  [0,0,0,0,0,0,22,22,22,0,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,22,21,25,29,21,25,29,21,22,0,0,0,0],
-  [0,0,0,22,21,25,29,21,25,29,21,22,0,0,0,0],
-  [0,0,0,22,30,21,21,21,21,21,30,22,0,0,0,0],
-  [0,0,0,22,21,21,19,19,19,21,21,22,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,22,22,21,21,21,21,21,21,21,22,22,0,0,0],
-  [0,0,22,23,21,21,21,21,21,21,21,23,22,0,0,0],
-  [0,0,22,23,21,1,1,1,1,1,21,23,22,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,0,22,22,22,22,22,22,22,0,0,0,0,0],
-  [0,0,0,0,0,19,19,0,19,19,0,0,0,0,0,0],
-  [0,0,0,0,0,19,0,0,0,19,0,0,0,0,0,0],
-];
-const _babyWalk = [
-  [0,0,0,0,0,0,22,22,22,0,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,22,21,25,29,21,25,29,21,22,0,0,0,0],
-  [0,0,0,22,21,25,29,21,25,29,21,22,0,0,0,0],
-  [0,0,0,22,30,21,21,21,21,21,30,22,0,0,0,0],
-  [0,0,0,22,21,21,19,19,19,21,21,22,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,22,22,21,21,21,21,21,21,21,22,22,0,0,0],
-  [0,0,22,23,21,21,21,21,21,21,21,23,22,0,0,0],
-  [0,0,22,23,21,1,1,1,1,1,21,23,22,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,0,22,22,22,22,22,22,22,0,0,0,0,0],
-  [0,0,0,0,19,19,0,0,0,19,19,0,0,0,0,0],
-  [0,0,0,0,19,0,0,0,0,0,19,0,0,0,0,0],
-];
-const _babyBlink = [
-  [0,0,0,0,0,0,22,22,22,0,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,22,21,29,29,21,29,29,21,22,0,0,0,0],
-  [0,0,0,22,30,21,21,21,21,21,30,22,0,0,0,0],
-  [0,0,0,22,21,21,19,19,19,21,21,22,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,22,22,21,21,21,21,21,21,21,22,22,0,0,0],
-  [0,0,22,23,21,21,21,21,21,21,21,23,22,0,0,0],
-  [0,0,22,23,21,1,1,1,1,1,21,23,22,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,0,22,22,22,22,22,22,22,0,0,0,0,0],
-  [0,0,0,0,0,19,19,0,19,19,0,0,0,0,0,0],
-  [0,0,0,0,0,19,0,0,0,19,0,0,0,0,0,0],
-];
-
-// JUNIOR 16x16 — bigger crest, gold chest V, tail
-const _juniorIdle = [
-  [0,0,0,0,0,22,18,22,18,22,0,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,22,21,25,29,21,25,29,21,22,0,0,0,0],
-  [0,0,0,22,21,25,29,21,25,29,21,22,0,0,0,0],
-  [0,0,0,22,30,21,21,21,21,21,30,22,0,0,0,0],
-  [0,0,0,22,21,21,15,15,15,21,21,22,0,0,0,0],
-  [0,0,22,22,21,21,21,21,21,21,21,22,22,0,0,0],
-  [0,22,23,21,21,18,21,21,21,18,21,21,23,22,0,0],
-  [0,22,23,21,21,21,18,21,18,21,21,21,23,22,0,0],
-  [0,0,22,21,21,21,21,18,21,21,21,21,22,0,0,0],
-  [0,0,22,21,21,1,1,1,1,1,21,21,22,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,0,22,22,22,22,22,22,22,22,22,0,0,0],
-  [0,0,0,0,0,15,15,0,15,15,0,22,22,0,0,0],
-  [0,0,0,0,0,15,0,0,0,15,0,0,22,0,0,0],
-];
-const _juniorWalk = [
-  [0,0,0,0,0,22,18,22,18,22,0,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,22,21,25,29,21,25,29,21,22,0,0,0,0],
-  [0,0,0,22,21,25,29,21,25,29,21,22,0,0,0,0],
-  [0,0,0,22,30,21,21,21,21,21,30,22,0,0,0,0],
-  [0,0,0,22,21,21,15,15,15,21,21,22,0,0,0,0],
-  [0,0,22,22,21,21,21,21,21,21,21,22,22,0,0,0],
-  [0,22,23,21,21,18,21,21,21,18,21,21,23,22,0,0],
-  [0,22,23,21,21,21,18,21,18,21,21,21,23,22,0,0],
-  [0,0,22,21,21,21,21,18,21,21,21,21,22,0,0,0],
-  [0,0,22,21,21,1,1,1,1,1,21,21,22,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,0,22,22,22,22,22,22,22,22,22,0,0,0],
-  [0,0,0,0,15,15,0,0,0,15,15,22,22,0,0,0],
-  [0,0,0,0,15,0,0,0,0,0,15,0,22,0,0,0],
-];
-const _juniorBlink = [
-  [0,0,0,0,0,22,18,22,18,22,0,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,22,21,29,29,21,29,29,21,22,0,0,0,0],
-  [0,0,0,22,30,21,21,21,21,21,30,22,0,0,0,0],
-  [0,0,0,22,21,21,15,15,15,21,21,22,0,0,0,0],
-  [0,0,22,22,21,21,21,21,21,21,21,22,22,0,0,0],
-  [0,22,23,21,21,18,21,21,21,18,21,21,23,22,0,0],
-  [0,22,23,21,21,21,18,21,18,21,21,21,23,22,0,0],
-  [0,0,22,21,21,21,21,18,21,21,21,21,22,0,0,0],
-  [0,0,22,21,21,1,1,1,1,1,21,21,22,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0],
-  [0,0,0,0,22,22,22,22,22,22,22,22,22,0,0,0],
-  [0,0,0,0,0,15,15,0,15,15,0,22,22,0,0,0],
-  [0,0,0,0,0,15,0,0,0,15,0,0,22,0,0,0],
-];
-
-// MASTER 20x20 — crown, long tail, big wings
-const _masterIdle = [
-  [0,0,0,0,0,0,0,18,0,18,0,18,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,18,22,18,22,18,22,18,0,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,0,22,21,25,29,21,21,21,25,29,21,22,0,0,0,0,0],
-  [0,0,0,0,22,21,25,29,21,21,21,25,29,21,22,0,0,0,0,0],
-  [0,0,0,0,22,30,21,21,21,21,21,21,21,30,22,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,19,19,19,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,22,21,21,21,21,21,21,21,21,21,22,22,0,0,0,0],
-  [0,0,22,23,21,21,18,21,21,21,21,21,18,21,21,23,22,0,0,0],
-  [0,22,23,21,21,21,21,18,21,21,21,18,21,21,21,21,23,22,0,0],
-  [0,22,23,21,21,21,21,21,18,31,18,21,21,21,21,21,23,22,0,0],
-  [0,0,22,21,21,21,1,1,1,1,1,1,1,21,21,21,22,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,22,22,22,22,22,22,22,22,22,22,0,0,0,0],
-  [0,0,0,0,0,0,19,19,0,0,19,19,0,22,18,22,0,0,0,0],
-  [0,0,0,0,0,0,19,0,0,0,0,19,0,0,22,18,22,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,18,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,0,0,0],
-];
-const _masterWalk = [
-  [0,0,0,0,0,0,0,18,0,18,0,18,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,18,22,18,22,18,22,18,0,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,0,22,21,25,29,21,21,21,25,29,21,22,0,0,0,0,0],
-  [0,0,0,0,22,21,25,29,21,21,21,25,29,21,22,0,0,0,0,0],
-  [0,0,0,0,22,30,21,21,21,21,21,21,21,30,22,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,19,19,19,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,22,21,21,21,21,21,21,21,21,21,22,22,0,0,0,0],
-  [0,0,22,23,21,21,18,21,21,21,21,21,18,21,21,23,22,0,0,0],
-  [0,22,23,21,21,21,21,18,21,21,21,18,21,21,21,21,23,22,0,0],
-  [0,22,23,21,21,21,21,21,18,31,18,21,21,21,21,21,23,22,0,0],
-  [0,0,22,21,21,21,1,1,1,1,1,1,1,21,21,21,22,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,22,22,22,22,22,22,22,22,22,22,0,0,0,0],
-  [0,0,0,0,0,19,19,0,0,0,0,19,19,22,18,22,0,0,0,0],
-  [0,0,0,0,0,19,0,0,0,0,0,0,19,0,22,18,22,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,18,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,0,0,0],
-];
-const _masterBlink = [
-  [0,0,0,0,0,0,0,18,0,18,0,18,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,18,22,18,22,18,22,18,0,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,0,22,21,29,29,21,21,21,29,29,21,22,0,0,0,0,0],
-  [0,0,0,0,22,30,21,21,21,21,21,21,21,30,22,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,19,19,19,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,22,21,21,21,21,21,21,21,21,21,22,22,0,0,0,0],
-  [0,0,22,23,21,21,18,21,21,21,21,21,18,21,21,23,22,0,0,0],
-  [0,22,23,21,21,21,21,18,21,21,21,18,21,21,21,21,23,22,0,0],
-  [0,22,23,21,21,21,21,21,18,31,18,21,21,21,21,21,23,22,0,0],
-  [0,0,22,21,21,21,1,1,1,1,1,1,1,21,21,21,22,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,0,22,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,22,22,22,22,22,22,22,22,22,22,0,0,0,0],
-  [0,0,0,0,0,0,19,19,0,0,19,19,0,22,18,22,0,0,0,0],
-  [0,0,0,0,0,0,19,0,0,0,0,19,0,0,22,18,22,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,18,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,0,0,0],
-];
-
-// LEGEND 24x24 — phoenix, flame wings, crown gems, flame tail
-const _legendIdle = [
-  [0,0,0,0,0,0,0,0,0,16,18,16,18,16,0,0,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,0,0,18,22,18,18,18,22,18,0,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,22,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,25,18,21,21,21,21,25,18,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,25,16,21,21,21,21,25,16,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,30,21,21,21,21,21,21,21,21,21,30,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,20,20,20,20,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,22,21,21,21,21,21,21,21,21,21,21,21,22,22,0,0,0,0,0],
-  [0,0,0,22,23,21,21,18,21,21,21,21,21,21,18,21,21,21,23,22,0,0,0,0],
-  [0,0,22,23,15,21,21,21,18,21,21,21,21,18,21,21,21,15,23,22,0,0,0,0],
-  [0,22,15,21,21,21,21,21,21,18,31,31,18,21,21,21,21,21,21,15,22,0,0,0],
-  [22,15,16,21,21,21,21,1,1,1,1,1,1,1,1,21,21,21,21,16,15,22,0,0],
-  [0,22,15,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,15,22,0,0,0,0],
-  [0,0,22,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,22,22,22,22,22,22,22,22,22,22,22,22,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,20,20,0,0,0,0,20,20,0,22,18,15,22,0,0,0,0,0],
-  [0,0,0,0,0,0,20,0,0,0,0,0,0,20,0,0,22,18,15,22,0,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,18,15,22,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,18,16,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,15,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,0,0,0],
-];
-const _legendWalk = [
-  [0,0,0,0,0,0,0,0,0,16,18,16,18,16,0,0,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,0,0,18,22,18,18,18,22,18,0,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,22,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,25,18,21,21,21,21,25,18,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,25,16,21,21,21,21,25,16,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,30,21,21,21,21,21,21,21,21,21,30,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,20,20,20,20,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,22,21,21,21,21,21,21,21,21,21,21,21,22,22,0,0,0,0,0],
-  [0,0,0,22,23,21,21,18,21,21,21,21,21,21,18,21,21,21,23,22,0,0,0,0],
-  [0,0,22,23,15,21,21,21,18,21,21,21,21,18,21,21,21,15,23,22,0,0,0,0],
-  [0,22,15,21,21,21,21,21,21,18,31,31,18,21,21,21,21,21,21,15,22,0,0,0],
-  [22,15,16,21,21,21,21,1,1,1,1,1,1,1,1,21,21,21,21,16,15,22,0,0],
-  [0,22,15,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,15,22,0,0,0,0],
-  [0,0,22,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,22,22,22,22,22,22,22,22,22,22,22,22,0,0,0,0,0,0,0],
-  [0,0,0,0,0,20,20,0,0,0,0,0,20,20,0,22,18,15,22,0,0,0,0,0],
-  [0,0,0,0,0,20,0,0,0,0,0,0,0,20,0,0,22,18,15,22,0,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,18,15,22,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,18,16,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,15,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,0,0,0],
-];
-const _legendBlink = [
-  [0,0,0,0,0,0,0,0,0,16,18,16,18,16,0,0,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,0,0,18,22,18,18,18,22,18,0,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,0,22,21,21,21,21,21,21,21,22,0,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,22,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,29,29,21,21,21,21,29,29,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,30,21,21,21,21,21,21,21,21,21,30,22,0,0,0,0,0,0],
-  [0,0,0,0,0,22,21,21,21,20,20,20,20,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,22,21,21,21,21,21,21,21,21,21,21,21,22,22,0,0,0,0,0],
-  [0,0,0,22,23,21,21,18,21,21,21,21,21,21,18,21,21,21,23,22,0,0,0,0],
-  [0,0,22,23,15,21,21,21,18,21,21,21,21,18,21,21,21,15,23,22,0,0,0,0],
-  [0,22,15,21,21,21,21,21,21,18,31,31,18,21,21,21,21,21,21,15,22,0,0,0],
-  [22,15,16,21,21,21,21,1,1,1,1,1,1,1,1,21,21,21,21,16,15,22,0,0],
-  [0,22,15,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,15,22,0,0,0,0],
-  [0,0,22,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0],
-  [0,0,0,22,21,21,21,21,21,21,21,21,21,21,21,21,21,22,0,0,0,0,0,0],
-  [0,0,0,0,22,22,22,22,22,22,22,22,22,22,22,22,22,0,0,0,0,0,0,0],
-  [0,0,0,0,0,0,20,20,0,0,0,0,20,20,0,22,18,15,22,0,0,0,0,0],
-  [0,0,0,0,0,0,20,0,0,0,0,0,0,20,0,0,22,18,15,22,0,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,18,15,22,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,18,16,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,15,0,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,0,0,0],
-];
-
-// ═══════ Mini painter for float button ═══════
+// ═══════ Mini painter for float button (first frame of sheet) ═══════
 class MiniCreaturePainter extends CustomPainter {
   final int stage;
   MiniCreaturePainter({required this.stage});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final sprites = [_eggF1, _babyIdle, _juniorIdle, _masterIdle, _legendIdle];
-    final sprite = sprites[stage.clamp(0, 4)];
-    final sw = sprite[0].length;
-    final sh = sprite.length;
-    final scale = math.min(size.width / sw, size.height / sh);
-    final ox = (size.width - sw * scale) / 2;
-    final oy = (size.height - sh * scale) / 2;
-    for (int r = 0; r < sh; r++) {
-      for (int c = 0; c < sw; c++) {
-        final idx = sprite[r][c];
-        if (idx == 0) continue;
-        final color = masterPalette[idx];
-        if (color == null) continue;
-        canvas.drawRect(
-          Rect.fromLTWH(ox + c * scale, oy + r * scale, scale, scale),
-          Paint()..color = color,
-        );
-      }
+    // Fallback simple bird icon when sprite sheet not available in CustomPainter
+    final p = Paint()..color = const Color(0xFF7C6DF5);
+    final cx = size.width / 2, cy = size.height / 2;
+    final s = size.width * 0.35;
+    // Body
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx, cy), width: s * 1.6, height: s * 1.2), p);
+    // Head
+    canvas.drawCircle(Offset(cx - s * 0.3, cy - s * 0.4), s * 0.45,
+        Paint()..color = const Color(0xFF9B8DFF));
+    // Eye
+    canvas.drawCircle(Offset(cx - s * 0.15, cy - s * 0.45), s * 0.1,
+        Paint()..color = const Color(0xFFFFFFFF));
+    canvas.drawCircle(Offset(cx - s * 0.12, cy - s * 0.47), s * 0.05,
+        Paint()..color = const Color(0xFF1A1A2E));
+    // Beak
+    final beak = Path()
+      ..moveTo(cx - s * 0.6, cy - s * 0.35)
+      ..lineTo(cx - s * 0.85, cy - s * 0.25)
+      ..lineTo(cx - s * 0.6, cy - s * 0.2);
+    canvas.drawPath(beak, Paint()..color = const Color(0xFFFF8F00));
+    // Wing
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(cx + s * 0.2, cy - s * 0.1),
+          width: s * 0.8, height: s * 0.5),
+      Paint()..color = const Color(0xFF6B5CE7));
+    // Crown for legend
+    if (stage == 4) {
+      canvas.drawCircle(Offset(cx - s * 0.3, cy - s * 0.8), s * 0.12,
+          Paint()..color = const Color(0xFFFFD700));
     }
   }
 

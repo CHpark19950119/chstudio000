@@ -1,4 +1,4 @@
-﻿$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 $token = "8514127849:AAF8_F7SBfm51SGHtp9X5lva7yexdnFyapo"
 $chatId = "8724548311"
 $apk = "build\app\outputs\flutter-apk\app-debug.apk"
@@ -19,10 +19,20 @@ if (-not $dev) {
 }
 Write-Host "Device: $dev"
 
+# ── Telegram 전송 함수 (JSON + UTF-8) ──
+function Send-Telegram {
+    param([string]$Text, [string]$Token = $token, [string]$ChatId = $chatId)
+    $jsonBody = @{ chat_id = $ChatId; text = $Text } | ConvertTo-Json -Compress
+    $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonBody)
+    Invoke-RestMethod -Uri "https://api.telegram.org/bot$Token/sendMessage" `
+        -Method Post -ContentType "application/json; charset=utf-8" `
+        -Body $utf8Bytes | Out-Null
+}
+
 Write-Host "Building..."
 flutter build apk --debug
 if ($LASTEXITCODE -ne 0) {
-    curl.exe -s -F "chat_id=$chatId" -F "text=CHSTUDIO build failed" "https://api.telegram.org/bot$token/sendMessage"
+    Send-Telegram -Text "CHSTUDIO build failed"
     exit 1
 }
 
@@ -56,7 +66,7 @@ if ($errors.Count -gt 0) {
 }
 
 if ($errors.Count -gt 3) {
-    curl.exe -s -F "chat_id=$chatId" -F "text=CHSTUDIO test errors: $($errors.Count)" "https://api.telegram.org/bot$token/sendMessage"
+    Send-Telegram -Text "CHSTUDIO test errors: $($errors.Count)"
     exit 1
 }
 
@@ -69,11 +79,11 @@ if ($apkSize -lt 50) {
 } else {
     $sizeRound = [math]::Round($apkSize, 1)
     Write-Host "APK ${sizeRound}MB > 50MB limit, text only"
-    curl.exe -s -F "chat_id=$chatId" -F "text=$resultText (APK ${sizeRound}MB)" "https://api.telegram.org/bot$token/sendMessage"
+    Send-Telegram -Text "$resultText (APK ${sizeRound}MB)"
 }
 
 if (Test-Path test_results\latest.png) {
     curl.exe -s -F "chat_id=$chatId" -F "photo=@test_results\latest.png" -F "caption=screenshot" "https://api.telegram.org/bot$token/sendPhoto"
 }
 
-Write-Host "Deploy done\!"
+Write-Host "Deploy done!"

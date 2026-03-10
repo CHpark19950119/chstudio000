@@ -27,7 +27,7 @@ extension FirebaseHistoryOps on FirebaseService {
     _todayCacheTime2 = DateTime.now();
     final localData = LocalCacheService().getGeneric('today') ?? {};
     _setNestedValue(localData, field, value);
-    LocalCacheService().saveGeneric('today', localData);
+    await LocalCacheService().saveGeneric('today', localData);
     _db.doc(_todayDoc2).update({
       field: value,
       'lastModified': DateTime.now().millisecondsSinceEpoch,

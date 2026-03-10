@@ -457,6 +457,10 @@ class _StatisticsScreenState extends State<StatisticsScreen>
           // ── 공부통계 ──
           _heroRow(),
           const SizedBox(height: 16),
+          _studyTrendCard(),
+          const SizedBox(height: 16),
+          _subjectBarCard(),
+          const SizedBox(height: 16),
           _sessionConcentrationCard(),
           const SizedBox(height: 16),
           _hourlyConcentrationCard(),
@@ -494,7 +498,11 @@ class _StatisticsScreenState extends State<StatisticsScreen>
     const SizedBox(height: 24),
     _animCard(0, _heroRow()),
     const SizedBox(height: 16),
-    _animCard(1, _sessionConcentrationCard()),
+    _animCard(1, _studyTrendCard()),
+    const SizedBox(height: 16),
+    _animCard(1, _subjectBarCard()),
+    const SizedBox(height: 16),
+    _animCard(2, _sessionConcentrationCard()),
     const SizedBox(height: 16),
     _animCard(2, _hourlyConcentrationCard()),
     const SizedBox(height: 16),
@@ -2003,6 +2011,147 @@ class _StatisticsScreenState extends State<StatisticsScreen>
       Text(text, style: BotanicalTypo.body(size: 14, color: _textMuted)),
     ]));
 
+  // ═══ ★ 순공시간 추이 LineChart ═══
+  Widget _studyTrendCard() {
+    final data = _isWeekly ? _weeklyData : _monthlyData;
+    if (data.isEmpty) return const SizedBox.shrink();
+    final maxMin = data.map((d) => d.minutes).reduce((a, b) => a > b ? a : b).clamp(60, 720);
+    final avgMin = data.where((d) => !d.isRestDay && d.minutes > 0).fold<int>(0, (s, d) => s + d.minutes);
+    final studyDays = data.where((d) => !d.isRestDay && d.minutes > 0).length;
+    final avg = studyDays > 0 ? avgMin ~/ studyDays : 0;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight,
+          colors: _dk ? [const Color(0xFF1A1E2E), const Color(0xFF141826)]
+                      : [const Color(0xFFF5F3FF), const Color(0xFFEEF0FA)]),
+        border: Border.all(color: const Color(0xFF8B5CF6).withOpacity(0.08))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: const Color(0xFF8B5CF6).withOpacity(_dk ? 0.12 : 0.08),
+              borderRadius: BorderRadius.circular(7)),
+            child: const Text('📈', style: TextStyle(fontSize: 12))),
+          const SizedBox(width: 8),
+          Text('순공시간 추이', style: BotanicalTypo.body(
+            size: 15, weight: FontWeight.w700, color: _textMain)),
+          const Spacer(),
+          _periodToggle(),
+        ]),
+        const SizedBox(height: 6),
+        Text('평균 ${_fmtMin(avg)} / 일', style: BotanicalTypo.label(
+          size: 11, color: _textMuted)),
+        const SizedBox(height: 16),
+        SizedBox(height: 130, child: AnimatedBuilder(animation: _chartAnim,
+          builder: (_, __) => CustomPaint(
+            size: const Size(double.infinity, 130),
+            painter: _TrendLinePainter(
+              data: data, maxMin: maxMin, avgMin: avg,
+              progress: _chartAnim.value, dark: _dk,
+              accent: const Color(0xFF8B5CF6),
+              txtMuted: _textMuted)))),
+        // Best record highlight
+        if (_bestDayMin > 0) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: BotanicalColors.gold.withOpacity(_dk ? 0.08 : 0.05),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: BotanicalColors.gold.withOpacity(0.12))),
+            child: Row(children: [
+              const Text('🏆', style: TextStyle(fontSize: 14)),
+              const SizedBox(width: 8),
+              Text('이번주 최고', style: BotanicalTypo.label(
+                size: 11, weight: FontWeight.w600, color: _textMuted)),
+              const Spacer(),
+              Text(_bestDayLabel, style: BotanicalTypo.label(
+                size: 11, weight: FontWeight.w700, color: BotanicalColors.gold)),
+              const SizedBox(width: 6),
+              Text(_fmtMin(_bestDayMin), style: BotanicalTypo.body(
+                size: 13, weight: FontWeight.w800, color: BotanicalColors.gold)),
+            ]),
+          ),
+        ],
+      ]),
+    );
+  }
+
+  // ═══ ★ 과목별 누적시간 수평 BarChart ═══
+  Widget _subjectBarCard() {
+    if (_subjectMinutes.isEmpty) return const SizedBox.shrink();
+    final sorted = _subjectMinutes.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final maxVal = sorted.first.value.clamp(1, 9999);
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight,
+          colors: _dk ? [const Color(0xFF1A2E26), const Color(0xFF142420)]
+                      : [const Color(0xFFE8F5E9), const Color(0xFFF1F8E9)]),
+        border: Border.all(color: BotanicalColors.primary.withOpacity(0.08))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: BotanicalColors.primary.withOpacity(_dk ? 0.12 : 0.08),
+              borderRadius: BorderRadius.circular(7)),
+            child: const Text('📊', style: TextStyle(fontSize: 12))),
+          const SizedBox(width: 8),
+          Text('과목별 누적시간', style: BotanicalTypo.body(
+            size: 15, weight: FontWeight.w700, color: _textMain)),
+          const Spacer(),
+          Text('최근 7일', style: BotanicalTypo.label(
+            size: 11, color: _textMuted)),
+        ]),
+        const SizedBox(height: 18),
+        ...sorted.asMap().entries.map((me) {
+          final i = me.key;
+          final e = me.value;
+          final c = BotanicalColors.subjectColor(e.key);
+          final pct = e.value / maxVal;
+          final h = e.value ~/ 60;
+          final m = e.value % 60;
+          return Padding(
+            padding: EdgeInsets.only(bottom: i < sorted.length - 1 ? 14 : 0),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Text(SubjectConfig.subjects[e.key]?.emoji ?? '📚',
+                  style: const TextStyle(fontSize: 14)),
+                const SizedBox(width: 8),
+                Expanded(child: Text(e.key, style: BotanicalTypo.body(
+                  size: 13, weight: FontWeight.w600, color: _textMain))),
+                Text('${h}h ${m}m', style: BotanicalTypo.body(
+                  size: 13, weight: FontWeight.w800, color: c)),
+              ]),
+              const SizedBox(height: 6),
+              AnimatedBuilder(animation: _chartAnim, builder: (_, __) =>
+                ClipRRect(borderRadius: BorderRadius.circular(5),
+                  child: Stack(children: [
+                    Container(height: 10,
+                      decoration: BoxDecoration(
+                        color: _dk ? Colors.white.withOpacity(0.04) : Colors.black.withOpacity(0.03),
+                        borderRadius: BorderRadius.circular(5))),
+                    FractionallySizedBox(widthFactor: pct * _chartAnim.value,
+                      child: Container(height: 10,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [c, c.withOpacity(0.6)]),
+                          borderRadius: BorderRadius.circular(5),
+                          boxShadow: [BoxShadow(
+                            color: c.withOpacity(0.20), blurRadius: 6)]))),
+                  ]))),
+            ]),
+          );
+        }),
+      ]),
+    );
+  }
+
   String _fmtMin(int m) => m < 60 ? '${m}분' : '${m ~/ 60}시간 ${m % 60}분';
 }
 
@@ -2225,6 +2374,94 @@ class _DayStudy { final String date, label; final int minutes; final bool isRest
 class _RoutineItem {
   final String emoji, label; final int minutes; final Color color;
   _RoutineItem(this.emoji, this.label, this.minutes, this.color);
+}
+
+class _TrendLinePainter extends CustomPainter {
+  final List<_DayStudy> data;
+  final int maxMin, avgMin;
+  final double progress;
+  final bool dark;
+  final Color accent, txtMuted;
+  _TrendLinePainter({required this.data, required this.maxMin, required this.progress,
+    required this.dark, required this.accent, required this.txtMuted, required this.avgMin});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (data.isEmpty) return;
+    final w = size.width;
+    final h = size.height - 20;
+    final seg = data.length > 1 ? w / (data.length - 1) : w;
+
+    // Grid lines
+    for (int g = 1; g <= 3; g++) {
+      final gy = h * (1 - g / 4);
+      final p = Paint()..color = (dark ? Colors.white : Colors.black).withOpacity(0.05)..strokeWidth = 0.5;
+      for (double dx = 0; dx < w; dx += 6) canvas.drawLine(Offset(dx, gy), Offset(dx + 3, gy), p);
+      final hrs = (maxMin * g / 4 / 60).round();
+      TextPainter(text: TextSpan(text: '${hrs}h', style: TextStyle(fontSize: 8, color: txtMuted.withOpacity(0.4))),
+        textDirection: TextDirection.ltr)..layout()..paint(canvas, Offset(0, gy - 10));
+    }
+
+    // Average line
+    final avgY = h * (1 - avgMin / maxMin) * progress;
+    final avgP = Paint()..color = accent.withOpacity(0.3)..strokeWidth = 1..style = PaintingStyle.stroke;
+    for (double dx = 0; dx < w; dx += 8) canvas.drawLine(Offset(dx, avgY), Offset(dx + 4, avgY), avgP);
+
+    // Build points
+    final pts = <Offset>[];
+    for (int i = 0; i < data.length; i++) {
+      final ratio = maxMin > 0 ? data[i].minutes / maxMin : 0.0;
+      pts.add(Offset(i * seg, h * (1 - ratio * progress)));
+    }
+
+    // Fill area
+    if (pts.length >= 2) {
+      final fillPath = Path()..moveTo(pts.first.dx, h);
+      for (final p in pts) fillPath.lineTo(p.dx, p.dy);
+      fillPath.lineTo(pts.last.dx, h);
+      fillPath.close();
+      canvas.drawPath(fillPath, Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter, end: Alignment.bottomCenter,
+          colors: [accent.withOpacity(0.15), accent.withOpacity(0.02)],
+        ).createShader(Rect.fromLTWH(0, 0, w, h)));
+    }
+
+    // Line
+    if (pts.length >= 2) {
+      final linePath = Path()..moveTo(pts[0].dx, pts[0].dy);
+      for (int i = 0; i < pts.length - 1; i++) {
+        final cx = (pts[i].dx + pts[i + 1].dx) / 2;
+        linePath.cubicTo(cx, pts[i].dy, cx, pts[i + 1].dy, pts[i + 1].dx, pts[i + 1].dy);
+      }
+      canvas.drawPath(linePath, Paint()..color = accent..strokeWidth = 2..style = PaintingStyle.stroke..strokeCap = StrokeCap.round);
+    }
+
+    // Points + labels
+    final bestI = data.indexWhere((d) => d.minutes == data.map((d2) => d2.minutes).reduce((a, b) => a > b ? a : b));
+    for (int i = 0; i < pts.length; i++) {
+      final isBest = i == bestI && data[i].minutes > 0;
+      final isRest = data[i].isRestDay;
+      final r = isBest ? 5.0 : 3.0;
+      final pc = isRest ? txtMuted.withOpacity(0.2) : (isBest ? const Color(0xFFF59E0B) : accent);
+      if (!isRest || data[i].minutes > 0) {
+        canvas.drawCircle(pts[i], r, Paint()..color = pc);
+        if (isBest) canvas.drawCircle(pts[i], r + 3, Paint()..color = pc.withOpacity(0.2)..style = PaintingStyle.stroke..strokeWidth = 2);
+      }
+      // X-axis labels
+      final showLabel = data.length <= 7 || i % 5 == 0 || i == data.length - 1;
+      if (showLabel) {
+        TextPainter(text: TextSpan(text: data[i].label,
+          style: TextStyle(fontSize: 8, fontWeight: isBest ? FontWeight.w800 : FontWeight.w500,
+            color: isBest ? pc : txtMuted.withOpacity(0.5))),
+          textDirection: TextDirection.ltr)..layout()..paint(canvas, Offset(pts[i].dx - 6, h + 6));
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TrendLinePainter old) =>
+    old.progress != progress || old.data.length != data.length;
 }
 
 class _TimeCategory {

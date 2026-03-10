@@ -8,6 +8,7 @@ import 'services/focus_service.dart';
 import 'services/local_cache_service.dart';
 import 'services/nfc_service.dart';
 import 'services/cradle_service.dart';
+import 'services/geofence_service.dart';
 
 class AppInit {
   static Future<void> run() async {
@@ -37,7 +38,8 @@ class AppInit {
       FocusService().restoreState().timeout(const Duration(seconds: 8)).catchError((_) {}),
     ]);
 
-    // ── Phase 4: 거치대 서비스 ──
+    // ── Phase 4: 거치대 + 지오펜스 서비스 ──
     CradleService().init().catchError((_) {});
+    GeofenceService().init().catchError((_) {});
   }
 }

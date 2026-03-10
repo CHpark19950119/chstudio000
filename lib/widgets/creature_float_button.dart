@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../game/creature_component.dart';
 
 class CreatureFloatButton extends StatelessWidget {
   final int level;
@@ -29,10 +28,29 @@ class CreatureFloatButton extends StatelessWidget {
             blurRadius: 16, offset: const Offset(0, 6))],
         ),
         child: Stack(clipBehavior: Clip.none, children: [
-          Center(child: CustomPaint(
-            size: const Size(36, 36),
-            painter: MiniCreaturePainter(stage: stage),
-          )),
+          // 3D sprite sheet first frame (128×128 grid, first tile = top-left)
+          Center(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: SizedBox(
+                width: 38, height: 38,
+                child: FittedBox(
+                  fit: BoxFit.cover,
+                  alignment: Alignment.topLeft,
+                  child: SizedBox(
+                    width: 128, height: 128,
+                    child: Image.asset(
+                      'assets/image/creature_3d_sheet_128.png',
+                      width: 768, height: 768,
+                      alignment: Alignment.topLeft,
+                      fit: BoxFit.none,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // Level badge
           Positioned(top: -4, right: -4, child: Container(
             width: 20, height: 20,
             decoration: BoxDecoration(

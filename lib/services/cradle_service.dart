@@ -26,8 +26,13 @@ class CradleService {
   bool _calibrated = false;
   bool get isCalibrated => _calibrated;
 
-  // Calibration reference gravity vector
+  // Calibration reference gravity vector (normal)
   double _refX = 0, _refY = 0, _refZ = 9.8;
+
+  // Calibration reference gravity vector (charging)
+  double _refX2 = 0, _refY2 = 0, _refZ2 = 0;
+  bool _calibrated2 = false;
+  bool get isChargingCalibrated => _calibrated2;
 
   // Angle thresholds (degrees)
   static const double _attachAngle = 12.0;
@@ -51,7 +56,11 @@ class CradleService {
       _refX = (box.get('refX', defaultValue: 0.0) as num).toDouble();
       _refY = (box.get('refY', defaultValue: 0.0) as num).toDouble();
       _refZ = (box.get('refZ', defaultValue: 9.8) as num).toDouble();
-      debugPrint('[Cradle] init: enabled=$_enabled, calibrated=$_calibrated, ref=($_refX, $_refY, $_refZ)');
+      _calibrated2 = box.get('calibrated2', defaultValue: false) as bool;
+      _refX2 = (box.get('refX2', defaultValue: 0.0) as num).toDouble();
+      _refY2 = (box.get('refY2', defaultValue: 0.0) as num).toDouble();
+      _refZ2 = (box.get('refZ2', defaultValue: 0.0) as num).toDouble();
+      debugPrint('[Cradle] init: enabled=$_enabled, calibrated=$_calibrated, cal2=$_calibrated2');
       if (_enabled && _calibrated) start();
     } catch (e) {
       debugPrint('[Cradle] init failed: $e');
@@ -76,7 +85,11 @@ class CradleService {
   }
 
   void _onAccelEvent(AccelerometerEvent event) {
-    final angle = _angleDeg(event.x, event.y, event.z, _refX, _refY, _refZ);
+    double angle = _angleDeg(event.x, event.y, event.z, _refX, _refY, _refZ);
+    if (_calibrated2) {
+      final angle2 = _angleDeg(event.x, event.y, event.z, _refX2, _refY2, _refZ2);
+      if (angle2 < angle) angle = angle2;
+    }
     _lastAngle = angle;
 
     if (_onCradle) {
@@ -178,6 +191,45 @@ class CradleService {
     } catch (_) {}
 
     debugPrint('[Cradle] calibrated: ref=($_refX, $_refY, $_refZ), samples=${xs.length}');
+    if (_enabled) start();
+  }
+
+  /// Calibrate charging angle: 5sec measurement -> second reference vector
+  Future<void> calibrateCharging() async {
+    final xs = <double>[];
+    final ys = <double>[];
+    final zs = <double>[];
+
+    final sub = accelerometerEventStream(
+      samplingPeriod: const Duration(milliseconds: 100),
+    ).listen((event) {
+      xs.add(event.x);
+      ys.add(event.y);
+      zs.add(event.z);
+    });
+
+    await Future.delayed(const Duration(seconds: 5));
+    await sub.cancel();
+
+    if (xs.isEmpty) {
+      debugPrint('[Cradle] charging calibration failed: no data');
+      return;
+    }
+
+    _refX2 = xs.reduce((a, b) => a + b) / xs.length;
+    _refY2 = ys.reduce((a, b) => a + b) / ys.length;
+    _refZ2 = zs.reduce((a, b) => a + b) / zs.length;
+    _calibrated2 = true;
+
+    try {
+      final box = await Hive.openBox('cradle');
+      await box.put('refX2', _refX2);
+      await box.put('refY2', _refY2);
+      await box.put('refZ2', _refZ2);
+      await box.put('calibrated2', true);
+    } catch (_) {}
+
+    debugPrint('[Cradle] charging calibrated: ref2=($_refX2, $_refY2, $_refZ2), samples=${xs.length}');
     if (_enabled) start();
   }
 
